@@ -53,6 +53,13 @@ jobs:
             docker run --rm -v "$PWD:/src:ro" "$image" bash /src/packaging/test-deb.sh /src/dist
             echo "::endgroup::"
           done
+      - name: „Bony's Agents installieren“ – echtes Release laden, Signatur und Prüfsumme prüfen, installieren
+        run: |
+          for image in debian:13 ubuntu:24.04; do
+            echo "::group::$image ($(dpkg --print-architecture))"
+            docker run --rm -v "$PWD:/src:ro" "$image" bash /src/packaging/test-agents-install.sh /src/dist
+            echo "::endgroup::"
+          done
       - name: Auf dem Runner installieren – polkit-Aktion mit Administrator-Passwort
         run: |
           sudo apt-get update -qq
