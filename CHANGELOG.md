@@ -3,6 +3,14 @@
 Alle Versionen von Bony's VPN. Bis zur Version 0.14 von [Bony's Agents](https://github.com/zappotex/BonysAgents)
 war Bony's VPN ein Teil davon. Die Entstehung steht im Verlauf dieses Repositorys.
 
+## 1.0.1
+
+- **Symbol in der Leiste bei jedem Start:** Wird Bony's VPN aus dem Startmenü geöffnet, bleibt es nach dem Schließen
+  des Fensters als Symbol in der Leiste (Status, Schnellwahl, Meldung bei Abbruch) – wie früher das Fenster
+  „Bony's VPN“ in Bony's Agents. Beenden über das Symbol → „Beenden“. Beim ersten Schließen erklärt eine
+  Benachrichtigung das. Zeigt der Desktop keine Symbole (GNOME ohne Erweiterung), beendet Schließen das Programm.
+  In 1.0.0 gab es das Symbol nur im Agent-PC (Autostart mit `--tray`).
+
 ## 1.0.0
 
 Erste eigenständige Version – Bony's VPN ist jetzt ein eigenes Projekt mit eigenen Paketen.

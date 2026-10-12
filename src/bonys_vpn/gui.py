@@ -611,6 +611,10 @@ class Window(Gtk.ApplicationWindow):
     def _on_close(self, *_):
         if self.app.keep_running():
             self.hide()
+            if self.app.tray is not None and not updates.load_settings().get("tray_hint_seen"):
+                updates.set_setting("tray_hint_seen", True)
+                self.app.notify(tr("Bony's VPN läuft weiter"),
+                                tr("Das Symbol in der Leiste zeigt den Status. Beenden über das Symbol → „Beenden“."))
             return True
         return False
 
@@ -1280,7 +1284,8 @@ class AgentsDialog(Gtk.Dialog):
 # ---------------------------------------------------------------- Anwendung
 class App(Gtk.Application):
     def __init__(self, client: HelperClient | None = None, sys_net: Path = model.SYS_NET, unique: bool = True,
-                 agentpc: bool | None = None, auto_status: bool | None = None, update_check: bool = True):
+                 agentpc: bool | None = None, auto_status: bool | None = None, update_check: bool = True,
+                 use_tray: bool = True):
         flags = Gio.ApplicationFlags.HANDLES_COMMAND_LINE
         if not unique:  # Tests: ohne D-Bus-Anmeldung
             flags |= Gio.ApplicationFlags.NON_UNIQUE
@@ -1308,6 +1313,9 @@ class App(Gtk.Application):
         self.nm_active: set[str] = set()   # WireGuard-Verbindungen des NetworkManager (nur eigener Rechner)
         self.no_resolvconf = host.resolvconf_missing()
         self.pending_exceptions: list[str] | None = None
+        self.use_tray = use_tray
+        self.tray_failed = False
+        self.holding = False
 
     # ----- Lebenszyklus
     def do_startup(self) -> None:
@@ -1329,21 +1337,34 @@ class App(Gtk.Application):
             self.started = True
             GLib.timeout_add_seconds(TICK, self.tick)
             self.refresh()
+        if self.use_tray and self.tray is None and not self.tray_failed:
+            # Symbol in der Leiste bei jedem Start: Schließen versteckt das Fenster nur
+            self.tray = Tray(self)
+            if self.tray is not None and not self.holding:
+                self.hold()
+                self.holding = True
         if "--tray" in args:
             if not self.background:
-                self.background = True
-                self.hold()  # ohne Fenster weiterlaufen
-                self.tray = Tray(self)
+                self.background = True   # Autostart: ohne Fenster, meldet Abbrüche auch ohne Symbol
+                if not self.holding:
+                    self.hold()
+                    self.holding = True
         else:
             self.show_window()
         return 0
 
     def keep_running(self) -> bool:
-        return self.background
+        """Läuft nach dem Schließen des Fensters weiter – mit Symbol in der Leiste oder im Autostart."""
+        return self.background or self.tray is not None
 
     def tray_unavailable(self) -> None:
         print(tr("Kein Symbol in der Leiste – dieser Desktop zeigt keine Statussymbole."), file=sys.stderr)
         self.tray = None
+        self.tray_failed = True
+        if self.holding and not self.background:
+            # ohne Symbol bliebe nach dem Schließen ein unsichtbares Programm übrig
+            self.release()
+            self.holding = False
 
     def show_window(self) -> None:
         first = self.window is None

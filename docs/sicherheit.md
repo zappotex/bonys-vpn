@@ -216,9 +216,11 @@ und müsste für jede Architektur einzeln gebaut werden. So ist das Paket 84 KB 
 arm64 gleich. Nur unter KDE Plasma und LXQt (Qt) holt `gir1.2-gtk-3.0` die GTK-3-Bibliotheken nach.
 Tray-Symbole funktionieren mit beiden Toolkits gleich (StatusNotifierItem). Keine pip-Pakete.
 
-- **Tray:** StatusNotifierItem (Cinnamon, Xfce, KDE, MATE, LXQt), sonst das klassische Infobereich-Symbol
-  (XEmbed). Zeigt der Desktop keine Statussymbole (GNOME ohne Erweiterung), läuft der Hintergrund ohne
-  Symbol weiter und meldet nur Abbrüche. Eine Instanz (D-Bus): Ein zweiter Aufruf öffnet das Fenster der
+- **Tray:** Das Symbol in der Leiste entsteht bei jedem Start. Schließen versteckt nur das Fenster, beendet wird
+  über das Symbol → „Beenden“. Im Agent-PC startet es zusätzlich nach der Anmeldung (`--tray`).
+  StatusNotifierItem (Cinnamon, Xfce, KDE, MATE, LXQt), sonst das klassische Infobereich-Symbol
+  (XEmbed). Zeigt der Desktop keine Statussymbole (GNOME ohne Erweiterung), beendet Schließen das Programm; nur der
+  Autostart (`--tray`) läuft dann ohne Symbol weiter und meldet Abbrüche. Eine Instanz (D-Bus): Ein zweiter Aufruf öffnet das Fenster der
   laufenden.
 - **Status ohne ständiges pkexec:** Ob ein Tunnel verbunden ist und wie viele Daten fließen, liest die
   Oberfläche ohne root aus `/sys/class/net`. Den Helfer (`status`) fragt sie nur nach Aktionen, bei

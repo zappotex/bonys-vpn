@@ -539,6 +539,13 @@ app = gui.App(client=Fake(), sys_net=gui.Path("/nonexistent"), unique=False, age
 def step1():
     w = app.window
     check(set(w.menu_items) == {"updates", "agents", "exceptions", "help", "about"}, f"Menü: {set(w.menu_items)}")
+    # Symbol in der Leiste bei jedem Start: Schließen versteckt nur. Ohne Symbol (wie hier unter Broadway
+    # nach der Prüfung) beendet Schließen das Programm – kein unsichtbarer Prozess
+    check(app.tray is not None or app.tray_failed, "kein Versuch, ein Symbol anzulegen")
+    if app.tray is not None:
+        check(app.keep_running() and app.holding, "läuft mit Symbol nicht weiter")
+        app.tray_unavailable()
+    check(not app.keep_running() and not app.holding, "läuft ohne Symbol unsichtbar weiter")
     app.agentpc = True   # Agent-PC: Menü ohne Bony's Agents
     w._menu_button()
     check("agents" not in w.menu_items and "exceptions" not in w.menu_items, "Agent-PC zeigt Bony's Agents")

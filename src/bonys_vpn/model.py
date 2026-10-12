@@ -227,6 +227,9 @@ EN = {
         "Bony's Agents is installed – you'll find it in the start menu.",
     "Bony's VPN ist aktuell (Version {v}).": "Bony's VPN is up to date (version {v}).",
     "Suche nach Updates …": "Checking for updates …",
+    "Bony's VPN läuft weiter": "Bony's VPN keeps running",
+    "Das Symbol in der Leiste zeigt den Status. Beenden über das Symbol → „Beenden“.":
+        "The icon in the panel shows the status. Quit via the icon → “Quit”.",
 }
 
 _lang: str | None = None

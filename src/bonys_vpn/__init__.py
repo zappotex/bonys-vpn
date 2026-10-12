@@ -17,7 +17,7 @@ für die Oberfläche python3-gi und GTK 3). Nur relative Importe – der Helfer 
 - ``install``    – Dateien für das .deb an ihren Platz legen, alte Installation entfernen
 """
 
-__version__ = "1.0.0"
+__version__ = "1.0.1"
 APP_NAME = "Bony's VPN"
 # Version des JSON-Formats der Kommandozeile (docs/cli.md). Steigt nur bei inkompatiblen Änderungen –
 # neue Felder kommen ohne neue Schema-Version dazu.
