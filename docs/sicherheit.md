@@ -1,21 +1,28 @@
 # Bony's VPN – Sicherheitskonzept
 
-Bony's VPN verwaltet WireGuard-Tunnel im Agent-PC und auf dem eigenen Linux-Rechner (Host).
-Der Code liegt in `src/bonys_agents/vpn/`. Er braucht nur die Python-Standardbibliothek und die
-Debian-Pakete `wireguard-tools`, `nftables`, `pkexec` und `polkitd`. Für das `DNS`-Feld einer
-Konfiguration ruft wg-quick `resolvconf` auf. Den Befehl bringt systemd-resolved mit (so im Agent-PC),
-sonst `openresolv`. Ist systemd-resolved aktiv, darf `openresolv` nicht zusätzlich installiert werden. Vom Rest von Bony's Agents hängt er nicht ab und wird deshalb
-einzeln in den Agent-PC kopiert.
+Bony's VPN verwaltet WireGuard-Tunnel auf dem eigenen Linux-Rechner und in den Agent-PCs von
+[Bony's Agents](https://github.com/zappotex/BonysAgents). Der Code liegt in `src/bonys_vpn/`. Er braucht nur
+die Python-Standardbibliothek und Debian-Pakete: `wireguard-tools`, `nftables`, `pkexec` und `polkitd`, für die
+Oberfläche `python3-gi` und `gir1.2-gtk-3.0`. Für das `DNS`-Feld einer Konfiguration ruft wg-quick
+`resolvconf` auf. Den Befehl bringt systemd-resolved mit (Ubuntu ab 24.04, Linux Mint 22, Debian 13 mit
+resolved, die Agent-PCs), sonst `openresolv`. Ist systemd-resolved aktiv, darf `openresolv` nicht zusätzlich
+installiert werden – das Paket zieht es deshalb auch nicht automatisch nach. Fehlt `resolvconf`, zeigt die
+Oberfläche bei Tunneln mit DNS-Feld einen Hinweis.
+
+Bis Version 0.14 von Bony's Agents war Bony's VPN ein Teil davon. Seit Bony's VPN 1.0.0 ist es ein eigenes
+Projekt mit eigenen Paketen. Bony's Agents nutzt es nur noch über die Kommandozeile (siehe `docs/cli.md`).
 
 ## Aufbau
 
 | Teil | Läuft als | Aufgabe |
 |---|---|---|
-| `bonys-vpn` (`cli.py`), `bonys-vpn-gui` (`gui.py`, `model.py`) | Benutzer | Bedienung. Liest .conf-Dateien mit den Rechten des Benutzers |
+| `bonys-vpn` (`cli.py`) | Benutzer | Kommandozeile, offizielle Schnittstelle (`docs/cli.md`). Liest .conf-Dateien mit den Rechten des Benutzers |
+| `bonys-vpn-gui` (`gui.py`, `model.py`, `host.py`) | Benutzer | Oberfläche (GTK 3), Tray-Symbol |
 | `bonys-vpn-helper` (`helper.py`) | root, über `pkexec` | Die wenigen Aktionen, für die root nötig ist |
 | `conf.py` | – | Prüft .conf-Dateien und Tunnelnamen, verbirgt Schlüssel |
 | `killswitch.py` | – | Baut das nftables-Regelwerk als Text |
-| `install.py` | root | Legt die Dateien an ihren Platz (siehe unten) |
+| `updates.py`, `signing.py` | Benutzer | Update-Suche, geprüfte Downloads (minisign), Installation über pkexec/apt |
+| `install.py` | root (Paketbau, postinst) | Legt die Paketdateien an, räumt eine alte Installation auf |
 
 ## Was der Helfer darf
 
@@ -112,18 +119,64 @@ Fehler und hängen nicht.
   `network-pre.target`, also bevor das Netz hochkommt. Sie hat absichtlich kein `ExecStop`, damit der
   Schutz bis zum Ausschalten bleibt.
 - **Ausschalten** (`killswitch off`): Unit deaktivieren, Tabelle löschen, Regeldatei entfernen.
-  Danach ist nichts mehr übrig. `install.py --uninstall` schaltet den Kill-Switch ebenfalls ab.
+  Danach ist nichts mehr übrig. Beim Entfernen des Pakets (`apt remove bonys-vpn`) schaltet `prerm` den
+  Kill-Switch ebenfalls ab, sonst bliebe der Rechner offline.
 - **Grenzen**: Gefiltert wird nur Verkehr, den dieser Rechner selbst erzeugt. Weitergeleiteter Verkehr
   (Docker-Container, Bridges, libvirt) läuft nicht über `output`. Programme von Bony's Agents mit
   QEMU-User-Netz (die Agent-PCs selbst) sind dagegen erfasst, weil QEMU ein Prozess auf dem Host ist.
 
-## Unterschied Agent-PC / Host
 
-| | Agent-PC | Host |
+## Pakete
+
+| Paket | Für | Inhalt |
 |---|---|---|
-| polkit-Regel | Benutzer `agent` darf **ohne Passwort** (`agent.rules`) | `auth_admin_keep`: Administrator-Passwort, einige Minuten gemerkt (`host.rules`) |
-| Kill-Switch-Ausnahmen | `10.0.2.0/24`, das QEMU-User-Netz | keine (eigene Netze per `--ausnahme`, z. B. Drucker im Heimnetz) |
-| Einordnung | Der Benutzer `agent` hat im Agent-PC ohnehin `sudo` ohne Passwort. Die Regel erspart nur die Abfrage und ist **keine Sicherheitsgrenze**: Jedes Programm im Agent-PC, auch der KI-Agent, kann den Tunnel steuern, den Kill-Switch abschalten und den Schlüssel lesen | Hier ist der Helfer die Grenze: Ohne Administrator-Passwort geht nichts |
+| `bonys-vpn` | jeden Rechner | Oberfläche, Kommandozeile, Helfer, polkit-Aktion und `host.rules` (Administrator-Passwort), systemd-Unit des Kill-Switch, Desktop-Eintrag, Symbol, Paketquelle für Updates |
+| `bonys-vpn-agentpc` | **nur** Agent-PCs von Bony's Agents | polkit-Regel „Gruppe `bonys-vpn` ohne Passwort“, Tray-Symbol nach der Anmeldung, Kill-Switch-Ausnahme `10.0.2.0/24`, Kennzeichnung als Agent-PC |
+
+Beide Pakete sind `Architecture: all`: reiner Python-Code, nichts Kompiliertes und kein gebündeltes Qt.
+Dasselbe Paket läuft auf amd64 und arm64.
+
+| Pfad | Inhalt |
+|---|---|
+| `/usr/lib/bonys-vpn/bonys_vpn/` | Das Python-Paket (System-Python, `python3 -IB`) |
+| `/usr/sbin/bonys-vpn-helper` | Helfer, `#!/usr/bin/python3 -IB` |
+| `/usr/bin/bonys-vpn`, `/usr/bin/bonys-vpn-gui` | Kommandozeile, Oberfläche |
+| `/usr/share/polkit-1/actions/io.github.bonys-agents.vpn.policy` | polkit-Aktion, gilt nur für `/usr/sbin/bonys-vpn-helper`, Standard `auth_admin_keep` |
+| `/usr/share/polkit-1/rules.d/50-bonys-vpn.rules` | `host.rules`: `AUTH_ADMIN_KEEP` für aktive lokale Sitzungen, sonst `AUTH_ADMIN`. Einzige Ausnahme ohne Passwort: genau `bonys-vpn-helper status` |
+| `/usr/share/polkit-1/rules.d/49-bonys-vpn-agentpc.rules` | nur `bonys-vpn-agentpc`: Gruppe `bonys-vpn` ohne Passwort |
+| `/usr/lib/systemd/system/bonys-vpn-killswitch.service` | Kill-Switch nach dem Neustart (eingeschaltet nur über den Helfer) |
+| `/usr/share/applications/bonys-vpn.desktop` | Desktop-Eintrag „Bony's VPN“ |
+| `/etc/xdg/autostart/bonys-vpn-agentpc-tray.desktop` | nur `bonys-vpn-agentpc`: Tray-Symbol nach der Anmeldung |
+| `/etc/apt/sources.list.d/bonys-vpn.sources` | Paketquelle für Updates (legt `postinst` an, siehe unten) |
+| `/etc/wireguard/NAME.conf` | Tunnel (600, root:root), legt der Helfer an |
+| `/etc/bonys-vpn/killswitch.json` | an/aus, Ausnahmen, zuletzt aufgelöste Endpunkte (keine Schlüssel) |
+
+- Das Hauptpaket liefert unter `/etc` nichts aus (keine Conffiles). `/etc/bonys-vpn` und `/etc/wireguard` legt
+  der Helfer bei Bedarf an. `apt purge bonys-vpn` löscht `/etc/bonys-vpn`, **nie** `/etc/wireguard`.
+- `prerm remove` schaltet den Kill-Switch ab. Sonst bliebe der Rechner ohne Tunnel offline, ohne dass es noch
+  ein Programm zum Abschalten gäbe. Bei einem Update bleibt er an.
+- Alle Dateien gehören root und sind nur für root beschreibbar. Sonst könnte ein Benutzer den Code ändern, den
+  pkexec als root startet.
+- `Replaces: bonys-agents (<< 0.15)`: Bis 0.14 brachte das .deb von Bony's Agents Helfer, Kommandozeile,
+  polkit-Dateien, Unit und Desktop-Eintrag an denselben Orten mit. `bonys-vpn` übernimmt diese Dateien.
+
+## Unterschied Agent-PC / eigener Rechner
+
+| | Agent-PC (`bonys-vpn` + `bonys-vpn-agentpc`) | eigener Rechner (`bonys-vpn`) |
+|---|---|---|
+| polkit | Gruppe `bonys-vpn` **ohne Passwort** | `auth_admin_keep`: Administrator-Passwort, einige Minuten gemerkt |
+| Kill-Switch-Ausnahmen | `10.0.2.0/24`, das QEMU-User-Netz | keine (eigene Netze über „Kill-Switch-Ausnahmen …“, z. B. Drucker im Heimnetz) |
+| Hinweise | keine | „Das VPN gilt dann für deinen ganzen Rechner“ vor dem ersten Verbinden/Import, Warnung vor dem Kill-Switch |
+| Menü „Bony's Agents“ | ausgeblendet | Vorstellung, öffnen bzw. installieren |
+| Einordnung | Der Benutzer des Agent-PCs hat dort ohnehin `sudo` ohne Passwort. Die Regel erspart nur die Abfrage und ist **keine Sicherheitsgrenze**: Jedes Programm im Agent-PC, auch der KI-Agent, kann den Tunnel steuern, den Kill-Switch abschalten und den Schlüssel lesen | Hier ist der Helfer die Grenze: Ohne Administrator-Passwort geht nichts außer `status` |
+
+**Warum ein eigenes Paket statt einer Option?** Eine Regel „ohne Passwort“ im Hauptpaket – auch abgeschaltet –
+wäre ein Schalter, den ein Fehler oder ein fremdes Skript auf dem eigenen Rechner umlegen könnte. Als eigenes
+Paket kommt sie nur dorthin, wo jemand es ausdrücklich installiert: Bony's Agents tut das beim Einrichten
+eines Agent-PCs (`apt install bonys-vpn bonys-vpn-agentpc` und `usermod -aG bonys-vpn BENUTZER`). Die Paketbeschreibung
+warnt vor der Installation auf dem eigenen Rechner. Die Regel nennt keinen festen Benutzernamen, sondern
+eine Gruppe – der Benutzer im Agent-PC kann beliebig heißen. polkit liest die Gruppen bei jeder Prüfung
+neu, eine neue Anmeldung ist nicht nötig.
 
 **Warum `10.0.2.0/24` im Agent-PC?** Bony's Agents steuert den Agent-PC über das QEMU-User-Netz:
 Die SSH-Weiterleitung (`hostfwd`) kommt von `10.0.2.2`, der Host ist unter `10.0.2.2` erreichbar,
@@ -132,62 +185,36 @@ virtio-serial und braucht gar kein Netz. Ohne diese Ausnahme blieben Steuerung u
 trotzdem möglich, RDP und SSH aber nur eingeschränkt. Weil `10.0.2.3` in dieser Ausnahme liegt,
 gehen DNS-Anfragen im Agent-PC bei getrenntem Tunnel weiter an das QEMU-DNS. Daten gehen nicht hinaus.
 
-**Schlüssel im Agent-PC**: Eine .conf wird nur in diesen einen Agent-PC übertragen (Sitzung 4).
-Vorlagen „frisch“ löschen Schlüssel und Tunnel. Bei einem Klon bleibt der Schlüssel erhalten, mit
-Warnhinweis: Zwei PCs mit demselben Schlüssel werfen sich gegenseitig aus dem Tunnel.
+### Umstieg von der alten Installation im Agent-PC
 
-## Installation
+Bis Bony's Agents 0.14 lag Bony's VPN im Agent-PC unter `/usr/local` (installiert mit `install.py --variant agent`),
+mit der Regel `/etc/polkit-1/rules.d/50-bonys-vpn.rules` „Benutzer agent ohne Passwort“. Beim Installieren der
+Pakete:
 
-`install.py` (als root, nur Standardbibliothek) legt ab:
-
-| Pfad | Inhalt |
-|---|---|
-| `/usr/local/lib/bonys-vpn/bonys_vpn/` | Das Paket (`conf`, `killswitch`, `helper`, `cli`, `install`) |
-| `/usr/local/sbin/bonys-vpn-helper` | Startet den Helfer mit `#!/usr/bin/python3 -I` |
-| `/usr/local/bin/bonys-vpn` | Kommandozeile |
-| `/usr/local/bin/bonys-vpn-gui` | Oberfläche (GTK 3) |
-| `/usr/local/share/applications/io.github.bonys_agents.vpn.desktop` | Desktop-Eintrag |
-| `/etc/xdg/autostart/bonys-vpn-tray.desktop` | Tray-Symbol nach der Anmeldung (nur mit `--autostart-tray`, im Agent-PC) |
-| `/usr/share/polkit-1/actions/io.github.bonys-agents.vpn.policy` | polkit-Aktion `io.github.bonys-agents.vpn`, gilt nur für genau den Helfer-Pfad |
-| `/etc/polkit-1/rules.d/50-bonys-vpn.rules` | Regel für den Agent-PC oder den Host |
-| `/etc/systemd/system/bonys-vpn-killswitch.service` | Kill-Switch nach dem Neustart |
-| `/etc/bonys-vpn/killswitch.json` | an/aus, Ausnahmen, zuletzt aufgelöste Endpunkte (keine Schlüssel) |
-
-Auf dem eigenen Rechner bringt das .deb von Bony's Agents dieselben Teile an andere Orte mit
-(`install.py --variant host --layout system --root PAKETORDNER` beim Paketbau, siehe unten).
-
-```sh
-sudo python3 -I install.py --variant agent --user agent --autostart-tray   # Agent-PC
-sudo python3 -I install.py --variant host                 # eigener Rechner
-sudo python3 -I install.py --uninstall                    # Tunnel in /etc/wireguard bleiben
-```
-
-Alle Dateien gehören root und sind nur für root beschreibbar. Sonst könnte ein Benutzer den Code
-ändern, den pkexec als root startet.
+1. `bonys-vpn` (`postinst`, `install.py --remove-legacy`) entfernt `/usr/local/lib/bonys-vpn`, die alten
+   Programme, den alten Desktop-Eintrag, den alten Autostart und die Unit unter `/etc/systemd/system`. War
+   der Kill-Switch eingeschaltet, zeigt die Unit danach auf die aus dem Paket. **Tunnel in `/etc/wireguard`
+   und `/etc/bonys-vpn/killswitch.json` bleiben unverändert.**
+2. `bonys-vpn-agentpc` (`postinst`, `install.py --migrate-agent-rule`) legt die Gruppe `bonys-vpn` an, nimmt
+   den Benutzer aus der alten Regel in die Gruppe auf und löscht die alte Regel.
 
 ## Kommandozeile
 
-```text
-bonys-vpn list
-bonys-vpn status [NAME] [--json]
-bonys-vpn up NAME | down [NAME]
-bonys-vpn import DATEI.conf|DATEI.zip … [--name NAME] [--hooks-erlauben] [--ersetzen]
-bonys-vpn delete NAME [--ja] | rename ALT NEU | export NAME [DATEI]
-bonys-vpn autostart NAME an|aus
-bonys-vpn killswitch an|aus|status [--ausnahme NETZ …]
-```
+Siehe `docs/cli.md` (offizielle Schnittstelle mit Schema-Version).
 
 ## Oberfläche
 
 `bonys-vpn-gui` (GTK 3 über `python3-gi`, Tray über Ayatana-AppIndicator) läuft als Benutzer und
 ruft für alles, was root braucht, denselben Helfer auf wie die Kommandozeile.
 
-**Warum GTK 3 und nicht PySide6:** Cinnamon, Xfce, GNOME und MATE bauen auf GTK 3 auf, `python3-gi`
-gehört schon zur Grundausstattung der Agent-PCs. Dazu kommen nur `gir1.2-gtk-3.0` und
+**Warum GTK 3 und nicht Qt:** Cinnamon, Xfce, GNOME und MATE bauen auf GTK 3 auf, `python3-gi` gehört zur
+Grundausstattung von Debian, Ubuntu und Mint. Dazu kommen nur `gir1.2-gtk-3.0` und
 `gir1.2-ayatanaappindicator3-0.1`, zusammen etwa 2 MB. PySide6 aus Debian bräuchte zusätzlich rund
-74 MB, selbst wenn die Qt6-Bibliotheken schon da sind (gemessen mit apt in Debian 13, Xfce). Nur unter
-KDE Plasma und LXQt (Qt) holt `gir1.2-gtk-3.0` die GTK-3-Bibliotheken nach. Tray-Symbole funktionieren
-mit beiden Toolkits gleich (StatusNotifierItem). Keine pip-Pakete.
+74 MB, selbst wenn die Qt6-Bibliotheken schon da sind (gemessen mit apt in Debian 13, Xfce), und in Debian 12
+und Ubuntu 22.04 gibt es PySide6 gar nicht als Paket. Ein gebündeltes Qt (wie bei Bony's Agents) wäre über 100 MB groß
+und müsste für jede Architektur einzeln gebaut werden. So ist das Paket 84 KB groß und läuft auf amd64 und
+arm64 gleich. Nur unter KDE Plasma und LXQt (Qt) holt `gir1.2-gtk-3.0` die GTK-3-Bibliotheken nach.
+Tray-Symbole funktionieren mit beiden Toolkits gleich (StatusNotifierItem). Keine pip-Pakete.
 
 - **Tray:** StatusNotifierItem (Cinnamon, Xfce, KDE, MATE, LXQt), sonst das klassische Infobereich-Symbol
   (XEmbed). Zeigt der Desktop keine Statussymbole (GNOME ohne Erweiterung), läuft der Hintergrund ohne
@@ -196,7 +223,7 @@ mit beiden Toolkits gleich (StatusNotifierItem). Keine pip-Pakete.
 - **Status ohne ständiges pkexec:** Ob ein Tunnel verbunden ist und wie viele Daten fließen, liest die
   Oberfläche ohne root aus `/sys/class/net`. Den Helfer (`status`) fragt sie nur nach Aktionen, bei
   offenem Fenster alle 10 s (Handshake) und im Hintergrund, wenn 150 s nichts mehr hereinkommt, obwohl
-  gesendet wird.
+  gesendet wird (beides nur, wenn `status` ohne Passwort geht, siehe unten).
 - **Abbruch-Meldung:** Der Tunnel verschwindet ohne eigene Aktion, oder der Server antwortet nicht mehr:
   Handshake älter als 3 Minuten, obwohl mehr als 135 s nach dem letzten gesendet wurde. Ein untätiger
   Tunnel hat nur einen alten Handshake und gilt nicht als abgebrochen.
@@ -207,100 +234,18 @@ mit beiden Toolkits gleich (StatusNotifierItem). Keine pip-Pakete.
   ausdrückliche Bestätigung.
 - **Export** schreibt mit Rechten `600` (atomar). Dateidialoge starten im persönlichen Ordner.
 - **Sprache:** Deutsch, auf nicht deutschen Systemen Englisch (`LANGUAGE`, `LC_ALL`, `LC_MESSAGES`, `LANG`).
+- **Eigener Rechner:** Vor dem ersten Verbinden oder Import der Hinweis „Das VPN gilt dann für deinen ganzen
+  Rechner“ (abschaltbar mit „Nicht mehr anzeigen“), Kill-Switch nur nach einer zusätzlichen Warnung,
+  Ausnahmen über das Menü. Fehlen `wireguard-tools` oder `nftables` (z. B. von Hand entfernt), bietet eine
+  Leiste an, sie nach Rückfrage mit `pkexec apt-get install` nachzuinstallieren.
+- **Einstellungen** der Oberfläche (Hinweis gesehen, Update-Suche) stehen in `~/.config/bonys-vpn/settings.json`,
+  nie Tunnel oder Schlüssel.
 
-Im Agent-PC installiert die App-Option „WireGuard VPN (Bony's VPN)“ (`apps.VPN`, standardmäßig aus)
-alles: Debian-Pakete, dann `install.py --variant agent --autostart-tray`. Der Code steht als tar.gz
-(base64) im Installationsschritt. Beim Erstellen kommt er so über das Seed-ISO in den Agent-PC, beim
-Nachinstallieren über den SSH-Weg („Programme hinzufügen“). Im PyInstaller-Paket liegen die
-`.py`-Dateien von `vpn/` deshalb zusätzlich als Daten.
-
-## Anbindung an Bony's Agents
-
-Die Seite von Bony's Agents liegt in `src/bonys_agents/vpnlink.py`. Sie liest eine .conf nur, prüft sie
-mit derselben Prüfung wie der Helfer (`conf.decode` + `conf.parse`) und reicht sie direkt in den
-Agent-PC. Auf dem Host bleibt nichts: kein Feld in `vm.json`, keine Zeile in Protokollen oder
-Fortschrittstexten, nichts in Vorlagen-Metadaten. `VpnSetup` zeigt die Daten auch in `repr` nicht.
-Konfigurationen mit Hook-Zeilen lehnt Bony's Agents ab. Sie lassen sich nur im Agent-PC über
-Bony's VPN mit der Warnung importieren.
-
-### Beim Erstellen
-
-- Dialog „Neuer Agent-PC“, Abschnitt **VPN**: Haken „WireGuard VPN (Bony's VPN)“, optional
-  „Konfiguration wählen …“, dann „Automatisch verbinden“ und „Kill-Switch“.
-  Kommandozeile: `bonys-agents create NAME --vpn-config DATEI [--vpn-name TUNNEL] [--vpn-autoconnect] [--killswitch]`.
-  Mit einer Konfiguration kommt die App „vpn“ automatisch dazu.
-- Die Datei kommt als eigene Datei `bonys-vpn.conf` ins Seed-ISO (nicht in user-data, das cloud-init
-  im Gast unter `/var/lib/cloud` aufhebt). Das Seed-ISO hat die Rechte `600`.
-- Ganz am Ende der Einrichtung, nach allen Downloads, hängt der Gast das ISO nur lesend ein und gibt
-  die Datei über die Standardeingabe an `bonys-vpn-helper import NAME`. Danach Autostart und
-  Kill-Switch, falls gewählt. Der Kill-Switch kommt zuletzt, damit er keinen Einrichtungsschritt
-  vom Internet trennt. Ausgaben des Helfers gehen nach `/dev/null`. Ein Merker
-  (`/var/lib/bonys-agents/vpn-config.done`) verhindert einen zweiten Import nach einem Abbruch.
-- Sobald die Einrichtung fertig ist, löscht Bony's Agents das Seed-ISO (wie bisher wegen des Passworts).
-  Danach liegt die Konfiguration nur noch in `/etc/wireguard` im Agent-PC.
-- Aus einer Vorlage geht das genauso (Erststart-Skript des Klons), wenn die Vorlage Bony's VPN enthält.
-
-### Im laufenden Agent-PC
-
-- Detailansicht, Reiter **VPN**: Status (verbunden/getrennt, Tunnel, Adresse, Server, Handshake, Daten),
-  „Verbinden“, „Trennen“, „Öffentliche IP prüfen“ (als Benutzer des Agent-PCs über api.ipify.org),
-  „Konfiguration importieren …“, Schalter für Autostart und Kill-Switch. Ohne Bony's VPN steht dort
-  „VPN-App installieren“ (öffnet „Programme hinzufügen“ mit der VPN-App).
-- Weg: Gast-Agent (`guest-exec` als root, `bonys-vpn status --json`, Import über `input-data`, also
-  über die Standardeingabe des Helfers). Antwortet der Gast-Agent nicht, per SSH mit `sudo` und dem
-  Passwort des Agent-PCs. Fehlermeldungen laufen auf dem Host noch einmal durch den Schlüsselfilter.
-- Kommandozeile: `bonys-agents vpn NAME status [--json] | up [TUNNEL] | down [TUNNEL] | import DATEI
-  [--tunnel NAME] [--replace] | killswitch on|off | autostart on|off [--tunnel NAME] | ip`.
-
-### Vorlagen
-
-- **Frisch** („Persönliche Daten entfernen“): Autostart aller `wg-quick@`-Dienste aus, alles in
-  `/etc/wireguard` gelöscht, Kill-Switch aus (Unit, Tabelle, Regeldatei), in `killswitch.json`
-  `enabled: false` und keine aufgelösten Server-Adressen mehr. Die Ausnahmen bleiben.
-- **Klon** („Persönliche Daten behalten“): alles bleibt. Dialog und Kommandozeile warnen: Zwei
-  Agent-PCs mit demselben Schlüssel werfen sich gegenseitig aus dem Tunnel.
-- Freier Platz wird beim Verallgemeinern **immer** mit Nullen überschrieben. `fstrim` allein reicht
-  nicht: Es gibt nur ganze 64-KiB-Cluster der qcow2-Datei frei, ein freier 4-KiB-Block in einem sonst
-  belegten Cluster behielte seinen Inhalt. Im echten Test stand der Wegwerf-Schlüssel einer
-  gelöschten .conf so noch in der Vorlage. Die Arbeitskopie läuft deshalb mit `detect-zeroes=unmap`,
-  die Nullen kosten dort keinen Platz.
-
-### Verträglichkeit mit dem Kill-Switch
-
-Geprüft im echten Test (Kill-Switch an, Tunnel getrennt): Gast-Agent, QMP, SSH-Weiterleitung,
-Herunterfahren (2,3 s), Fortschrittsanzeige (serielle Konsole), RDP (xrdp über die Weiterleitung),
-dynamische Auflösung (spice-vdagent über virtio-serial). „Agent-PC aktualisieren“ geht über den
-Tunnel. Ohne Tunnel meldet es: „Kill-Switch an und kein Tunnel verbunden – erst verbinden“ (vorher
-hätte apt die Netzfehler als Erfolg gemeldet).
-
-## Eigener Rechner (Host)
-
-### Linux: das .deb von Bony's Agents
-
-| Pfad | Inhalt |
-|---|---|
-| `/usr/lib/bonys-agents/vpn/bonys_vpn/` | Das Paket (ohne GTK-Oberfläche), läuft mit dem System-Python, nicht mit dem PyInstaller-Bündel |
-| `/usr/sbin/bonys-vpn-helper` | Helfer, `#!/usr/bin/python3 -I` |
-| `/usr/bin/bonys-vpn` | Kommandozeile |
-| `/usr/share/polkit-1/actions/io.github.bonys-agents.vpn.policy` | polkit-Aktion, gilt nur für `/usr/sbin/bonys-vpn-helper` |
-| `/usr/share/polkit-1/rules.d/50-bonys-vpn.rules` | `host.rules`: `AUTH_ADMIN_KEEP` für aktive lokale Sitzungen, sonst `AUTH_ADMIN`. Einzige Ausnahme ohne Passwort: genau `bonys-vpn-helper status` (siehe unten) |
-| `/usr/lib/systemd/system/bonys-vpn-killswitch.service` | Kill-Switch nach dem Neustart (eingeschaltet nur über den Helfer) |
-| `/usr/share/applications/bonys-vpn.desktop` | Desktop-Eintrag „Bony's VPN“ → `/opt/bonys-agents/BonysAgents --vpn` |
-
-- Unter `/etc` liefert das Paket nichts aus (keine Conffiles). `/etc/bonys-vpn` und `/etc/wireguard`
-  legt der Helfer bei Bedarf an. `dpkg --purge` löscht `/etc/bonys-vpn`, **nie** `/etc/wireguard`.
-- `Depends: python3`, `Recommends: wireguard-tools, nftables` (neben `pkexec`). Fehlen die beiden,
-  bietet der Bereich „VPN“ an, sie nach Rückfrage mit `pkexec apt-get install` nachzuinstallieren.
-- `prerm remove` schaltet den Kill-Switch ab. Sonst bliebe der Rechner ohne Tunnel offline, ohne dass es
-  noch ein Programm zum Abschalten gäbe. Bei einem Update bleibt er an.
-- `install.py --layout system` geht nur mit `--root` (zum Paketbau). Auf einem Rechner mit dem .deb
-  nicht zusätzlich `install.py --variant host` verwenden: Beide legen dieselbe polkit-Datei an.
-- Die Kommandozeile sucht den Helfer zuerst unter `/usr/local/sbin` (install.py, Agent-PC), dann unter
-  `/usr/sbin` (.deb), oder nimmt `BONYS_VPN_HELPER`.
+## Eigener Rechner
 
 ### Status ohne Passwort
 
-Die Oberfläche fragt bei sichtbarem Bereich alle 10 s den Helfer (`status`) nach dem Handshake. Mit
+Die Oberfläche fragt bei offenem Fenster und verbundenem Tunnel alle 10 s den Helfer (`status`) nach dem Handshake. Mit
 `auth_admin_keep` allein käme immer wieder die Passwortabfrage. Deshalb erlaubt `host.rules` der aktiven
 lokalen Sitzung genau die Befehlszeile `/usr/sbin/bonys-vpn-helper status` (ohne weitere Argumente)
 **ohne Passwort**. pkexec gibt sie den Regeln als `command_line` mit. Alles andere fragt weiter nach dem
@@ -312,11 +257,12 @@ passt immer (im echten Test auf Mint 22 mit polkit 124 kam deshalb trotzdem die 
 
 `status` gibt nur nicht geheime Angaben aus: Tunnelnamen, Adressen, DNS, Endpunkte, Handshake, Datenmenge,
 Kill-Switch-Zustand. Die sieht damit jeder Benutzer, der am Rechner angemeldet ist, Schlüssel nie. Fehlt die
-Regel (ältere Installation), fragt die Oberfläche den Helfer nur auf Knopfdruck und liest Verbunden/Getrennt
-und die Datenmenge aus `/sys`.
+Regel oder kann polkit keine Regeln (Version 0.105 in Ubuntu 22.04 und Linux Mint 21), fragt die Oberfläche
+den Helfer nur beim Start, bei Aktionen und auf „Neu laden“ und liest Verbunden/Getrennt und die Datenmenge
+aus `/sys`.
 
 **Wie oft fragt polkit?** `auth_admin_keep` merkt sich die Anmeldung einige Minuten **für den aufrufenden
-Prozess**. Im Fenster von Bony's Agents ist das immer derselbe Prozess, also eine Abfrage für mehrere
+Prozess**. Im Fenster von Bony's VPN ist das immer derselbe Prozess, also eine Abfrage für mehrere
 Aktionen. Jeder einzelne Aufruf von `bonys-vpn` auf der Kommandozeile ist ein neuer Prozess und fragt neu.
 
 ### WireGuard-Verbindungen des NetworkManager
@@ -328,20 +274,7 @@ NetworkManager (`wg-quick down` kennt sie nicht), und sie benutzen dieselbe Rout
 mit dem Hinweis auf das Netzwerk-Symbol, und vor dem Verbinden eines anderen Tunnels kommt die Bitte,
 den NetworkManager-Tunnel zuerst zu trennen.
 
-### Oberfläche (Qt)
-
-`gui/host_vpn.py`: Bereich „VPN“ im Hauptfenster (Knopf oben, nur Linux) und eigenes Fenster
-(`BonysAgents --vpn`) mit Tray-Symbol (`QSystemTrayIcon`, schließt in den Infobereich). Dieselbe Logik wie
-im Agent-PC (`vpn/model.py`: Status, Live-Werte, Abbruch-Erkennung, Editor-Prüfung, Namensvorschlag,
-Export mit 600), dieselben Aufrufe des Helfers (`vpn/cli.call`, Konfigurationen über die Standardeingabe).
-
-- Vor dem Verbinden oder Import: Hinweis „Das VPN gilt dann für deinen ganzen Rechner, nicht nur
-  für die Agent-PCs.“ (abschaltbar mit „Nicht mehr anzeigen“).
-- Kill-Switch nur nach einer zusätzlichen Warnung. Ausnahmen (z. B. das Heimnetz) über „Ausnahmen …“
-  (`killswitch on --exception NETZ … | --no-exceptions`).
-- Konfigurationen mit Hook-Zeilen nur nach der Warnung (wie im Agent-PC).
-
-### Kill-Switch auf dem Host und die Agent-PCs
+### Kill-Switch auf dem eigenen Rechner und die Agent-PCs
 
 Die Agent-PCs nutzen das QEMU-User-Netz: QEMU ist ein Prozess auf dem Host, ihr Internetverkehr ist also
 Verkehr des Hosts und läuft durch `output`. Mit Kill-Switch und Tunnel geht er durch den Tunnel, ohne Tunnel
@@ -353,21 +286,46 @@ erlaubt:
 - Zugriffe aus dem Heimnetz auf eingeschalteten Fernzugriff: Antworten (`ct direction reply`) sind erlaubt
 - DNS im Agent-PC (QEMU-DNS 10.0.2.3 → Resolver des Hosts über `lo` → systemd-resolved): geht, Daten nicht
 
-Geprüft im echten Test (siehe `docs/plan-vpn-obsidian.md`, Sitzung 5). Ohne Tunnel dauert das
+Geprüft im echten Test (Bony's Agents 0.14.0, Linux Mint 22.3). Ohne Tunnel dauert das
 Herunterfahren eines Agent-PCs mit Hermes Agent und Telegram-Anbindung länger (gemessen 65 s statt 20 s):
 Das Hermes-Gateway versucht beim Beenden weiter Telegram zu erreichen, bis sein eigener Watchdog nach 60 s
 abbricht. Das bleibt unter den 90 s, nach denen Bony's Agents hart ausschaltet. Dasselbe passiert bei jedem
 Agent-PC ohne Internet, auch mit dem Kill-Switch im Agent-PC.
 
-### Windows und macOS
 
-- **Windows:** „Extras → WireGuard für diesen Rechner installieren …“ → `winget install --id WireGuard.WireGuard
-  -e --silent --accept-package-agreements --accept-source-agreements` (Windows fragt nach Administratorrechten).
-  Ist `C:\Program Files\WireGuard\wireguard.exe` schon da, öffnet der Menüpunkt die App. Fehlt winget,
-  verweist die Meldung auf https://www.wireguard.com/install/.
-- **macOS:** Laut https://www.wireguard.com/install/ gibt es die App nur im App Store (ID 1451685025).
-  Homebrew und MacPorts liefern nur `wireguard-tools` ohne App, `mas` ist kein offizielles Werkzeug und
-  bräuchte die Apple-ID-Anmeldung. Bony's Agents öffnet deshalb `macappstore://apps.apple.com/app/id1451685025`
-  (ersatzweise die Webseite) und erklärt die Schritte. Ist `/Applications/WireGuard.app` da, wird sie geöffnet.
-- In beiden Fällen verwaltet die offizielle App die Tunnel. Bony's Agents liest oder speichert keine
-  Konfigurationen.
+## Updates
+
+- **Update-Suche:** höchstens einmal am Tag beim Öffnen des Fensters und über das Menü („Nach Updates
+  suchen …“). Gefragt wird `https://api.github.com/repos/zappotex/bonys-vpn/releases/latest`, ohne Token,
+  mit Zeitlimit. Ist GitHub nicht erreichbar, gibt es still „keine Updates“.
+- **Installieren** nur nach Rückfrage, über pkexec:
+  - Ist eine der Paketquellen eingerichtet (`bonys-vpn.sources` oder `bonys-agents.sources`), mit
+    `apt-get install --only-upgrade bonys-vpn`. Updates kommen dann auch über die Aktualisierungsverwaltung.
+  - Sonst (oder wenn die Paketquelle die Version noch nicht hat) das .deb aus dem offiziellen Release: nur
+    über HTTPS und nur von `https://github.com/zappotex/bonys-vpn/releases/download/…`. Vorher prüft
+    Bony's VPN die **minisign-Signatur** von `SHA256SUMS` mit dem fest eingebauten öffentlichen Schlüssel
+    (derselbe wie bei Bony's Agents), ob der signierte Kommentar genau diese Version nennt (Schutz vor echten,
+    aber alten Dateien), und die **SHA-256-Prüfsumme** der Datei. Stimmt etwas nicht, wird nichts installiert.
+- **Paketquelle:** Bony's VPN und Bony's Agents teilen sich eine APT-Paketquelle auf GitHub Pages
+  (`https://zappotex.github.io/BonysAgents/apt/`, signiert mit dem GPG-Schlüssel von Bony's Agents).
+  Bony's Agents trägt die Suite `stable` ein, Bony's VPN die Suite `bonys-vpn` – beide enthalten alle
+  Pakete. Zwei Einträge für dieselbe Suite mit verschiedenen `Signed-By` lehnt apt ab („Conflicting values set
+  for option Signed-By“); mit eigenen Suiten vertragen sich beide Pakete, und jedes kann allein entfernt werden.
+
+## Bony's Agents installieren
+
+Auf dem eigenen Rechner zeigt das Menü „Bony's Agents – virtuelle Agent-PCs …“: kurze Beschreibung, Link zum
+YouTube-Kanal und „Bony's Agents öffnen“ (wenn installiert: `/opt/bonys-agents/BonysAgents`, `bonys-agents-gui`
+oder die Installation aus `install.sh`) bzw. „Bony's Agents installieren …“. Installiert wird nach Rückfrage
+aus der offiziellen Quelle, genauso wie die Updates von Bony's VPN: aus der Paketquelle (`apt-get install
+bonys-agents`), sonst das passende .deb (`amd64`/`arm64`) aus dem neuesten Release von `zappotex/BonysAgents`
+mit Signatur- und Prüfsummenprüfung, dann `apt-get install ./datei.deb` über pkexec. Ein Fenster zeigt den
+Fortschritt (Download-Balken, Ausgabe von apt), Fehler stehen in Klartext darüber. Im Agent-PC ist der Menüpunkt
+ausgeblendet.
+
+## Anbindung an Bony's Agents
+
+Bony's Agents steuert Bony's VPN im Agent-PC nur über die Kommandozeile (`docs/cli.md`): als Benutzer per SSH
+oder als root über den QEMU-Gast-Agent (`bonys-vpn-helper`, Konfigurationen über die Standardeingabe). Eine
+.conf, die man beim Erstellen eines Agent-PCs auswählt, gelangt nur in diesen einen Agent-PC. Vorlagen,
+Klone und die Übertragung beschreibt die Dokumentation von Bony's Agents.

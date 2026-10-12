@@ -1,0 +1,54 @@
+# Bony's VPN wird als Debian-Paket ausgeliefert (packaging/build-deb.sh), nicht über PyPI.
+# Diese Datei dient der Entwicklung: pip install -e ".[dev]", pytest, ruff.
+[build-system]
+requires = ["hatchling"]
+build-backend = "hatchling.build"
+
+[project]
+name = "bonys-vpn"
+dynamic = ["version"]
+description = "WireGuard-VPN mit Kill-Switch – Oberfläche (GTK 3), Kommandozeile und Root-Helfer über polkit"
+readme = "README.md"
+license = "GPL-3.0-or-later"
+license-files = ["LICENSE"]
+authors = [{ name = "Bony" }]
+requires-python = ">=3.10"
+keywords = ["wireguard", "vpn", "kill-switch", "gtk", "polkit", "nftables"]
+classifiers = [
+  "Development Status :: 5 - Production/Stable",
+  "License :: OSI Approved :: GNU General Public License v3 or later (GPLv3+)",
+  "Environment :: X11 Applications :: GTK",
+  "Intended Audience :: End Users/Desktop",
+  "Natural Language :: German",
+  "Operating System :: POSIX :: Linux",
+  "Programming Language :: Python :: 3",
+  "Topic :: System :: Networking",
+]
+# Laufzeit: nur Standardbibliothek und Debian-Pakete (python3-gi, gir1.2-gtk-3.0, wireguard-tools, nftables)
+dependencies = []
+
+[project.optional-dependencies]
+dev = ["pytest>=8", "ruff>=0.6"]
+
+[project.urls]
+Homepage = "https://github.com/zappotex/bonys-vpn"
+
+[project.scripts]
+bonys-vpn = "bonys_vpn.cli:main"
+
+[tool.hatch.version]
+path = "src/bonys_vpn/__init__.py"
+
+[tool.hatch.build.targets.wheel]
+packages = ["src/bonys_vpn"]
+
+[tool.pytest.ini_options]
+testpaths = ["tests"]
+
+[tool.ruff]
+line-length = 120
+target-version = "py310"
+
+[tool.ruff.lint]
+select = ["E", "F", "W", "B", "UP"]
+ignore = ["B008"]

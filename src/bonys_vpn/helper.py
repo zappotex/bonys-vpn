@@ -27,8 +27,8 @@ import sys
 import tempfile
 from pathlib import Path
 
+from . import SCHEMA, __version__, killswitch
 from . import conf as wgconf
-from . import killswitch
 
 ETC_WG = Path("/etc/wireguard")
 STATE_DIR = Path("/etc/bonys-vpn")
@@ -447,8 +447,9 @@ def main(argv: list[str] | None = None, helper: Helper | None = None, stdin=None
         os.umask(0o077)
         helper = Helper()
 
-    def out(data) -> None:
-        stdout.write(json.dumps(data, ensure_ascii=False) + "\n")
+    def out(data: dict) -> None:
+        # Jede JSON-Antwort nennt Schema und Version (offizielle Schnittstelle, docs/cli.md)
+        stdout.write(json.dumps({"schema": SCHEMA, "version": __version__, **data}, ensure_ascii=False) + "\n")
 
     try:
         for attr in ("name", "old", "new"):

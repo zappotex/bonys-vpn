@@ -1,0 +1,67 @@
+name: CI
+
+# Tests und ruff (Ubuntu 22.04 mit Python 3.10 und polkit 0.105, Ubuntu 24.04, arm64), dann die Pakete bauen
+# und in frischen Containern installieren und prüfen: Debian 12, Debian 13, Ubuntu 22.04, Ubuntu 24.04 –
+# jeweils auf amd64 und arm64 (packaging/test-deb.sh). Der Release-Workflow ruft diesen Workflow auf.
+
+on:
+  push:
+    branches: [main]
+  pull_request:
+  workflow_call:
+  workflow_dispatch:
+
+jobs:
+  test:
+    strategy:
+      fail-fast: false
+      matrix:
+        runner: [ubuntu-22.04, ubuntu-24.04, ubuntu-24.04-arm]
+    runs-on: ${{ matrix.runner }}
+    steps:
+      - uses: actions/checkout@v4
+      - name: Systempakete (GTK 3 für den Oberflächen-Test über Broadway)
+        run: |
+          sudo apt-get update -qq
+          sudo apt-get install -y -qq python3-venv python3-gi gir1.2-gtk-3.0 gir1.2-ayatanaappindicator3-0.1 \
+            libgtk-3-bin > /dev/null
+      - name: Entwicklungsumgebung (System-Python mit python3-gi)
+        run: |
+          python3 --version
+          python3 -m venv --system-site-packages .venv
+          .venv/bin/pip install -q -e ".[dev]"
+      - run: .venv/bin/ruff check src tests
+      - run: .venv/bin/pytest -q -rs
+
+  deb:
+    needs: test
+    strategy:
+      fail-fast: false
+      matrix:
+        runner: [ubuntu-24.04, ubuntu-24.04-arm]
+    runs-on: ${{ matrix.runner }}
+    steps:
+      - uses: actions/checkout@v4
+      - name: Pakete bauen
+        run: |
+          packaging/build-deb.sh
+          for d in dist/*.deb; do echo "::group::$d"; dpkg-deb -I "$d"; dpkg-deb -c "$d"; echo "::endgroup::"; done
+      - name: In Debian 12/13 und Ubuntu 22.04/24.04 installieren und prüfen
+        run: |
+          for image in debian:12 debian:13 ubuntu:22.04 ubuntu:24.04; do
+            echo "::group::$image ($(dpkg --print-architecture))"
+            docker run --rm -v "$PWD:/src:ro" "$image" bash /src/packaging/test-deb.sh /src/dist
+            echo "::endgroup::"
+          done
+      - name: Auf dem Runner installieren – polkit-Aktion mit Administrator-Passwort
+        run: |
+          sudo apt-get update -qq
+          sudo apt-get install -y -qq ./dist/bonys-vpn_*_all.deb > /dev/null
+          pkaction --action-id io.github.bonys-agents.vpn --verbose | tee pk.txt
+          grep -q "implicit active: *auth_admin_keep" pk.txt
+          sudo bonys-vpn status
+      - uses: actions/upload-artifact@v4
+        if: matrix.runner == 'ubuntu-24.04'
+        with:
+          name: deb
+          path: dist/*.deb

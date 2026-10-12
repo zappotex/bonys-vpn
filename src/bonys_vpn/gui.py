@@ -7,6 +7,10 @@ Läuft als normaler Benutzer. Alles, was root braucht, geht wie bei der Kommando
     bonys-vpn-gui            Fenster öffnen (läuft schon eine Instanz, zeigt sie ihr Fenster)
     bonys-vpn-gui --tray     nur das Symbol in der Leiste (Autostart nach der Anmeldung)
 
+Eigener Rechner und Agent-PC unterscheiden sich nur in Hinweisen: Auf dem eigenen Rechner kommt vor dem
+ersten Verbinden der Hinweis „gilt für den ganzen Rechner“, vor dem Kill-Switch eine Warnung, und das
+Menü bietet Bony's Agents an. Im Agent-PC (Paket bonys-vpn-agentpc) entfällt das.
+
 Tray: StatusNotifierItem über Ayatana-AppIndicator (Cinnamon, Xfce, KDE, MATE, LXQt), sonst das
 klassische Infobereich-Symbol (XEmbed). Zeigt der Desktop keine Statussymbole (GNOME ohne
 Erweiterung), läuft der Hintergrund ohne Symbol weiter und meldet nur Abbrüche.
@@ -14,6 +18,9 @@ Erweiterung), läuft der Hintergrund ohne Symbol weiter und meldet nur Abbrüche
 
 from __future__ import annotations
 
+import json
+import os
+import subprocess
 import sys
 import threading
 import time
@@ -32,12 +39,15 @@ try:
 except (ValueError, ImportError):
     AppIndicator = None
 
-from . import cli  # noqa: E402
+from . import APP_NAME, COPYRIGHT, REPO_URL, YOUTUBE_CHANNEL_URL, __version__  # noqa: E402
+from . import cli, host, model, updates  # noqa: E402
 from . import conf as wgconf  # noqa: E402
-from . import model  # noqa: E402
 from .model import tr  # noqa: E402
 
-APP_ID = "io.github.bonys_agents.vpn"
+APP_ID = "io.github.zappotex.BonysVPN"
+model.EN.setdefault(host.INTRO, host.INTRO_EN)
+model.EN.setdefault(host.KILLSWITCH_WARNING, host.KILLSWITCH_WARNING_EN)
+HELP_URL = f"{REPO_URL}#readme"
 DATA = Path(__file__).resolve().parent / "data"
 ICON_DIR = DATA / "icons"
 APP_ICON = DATA / "bonys-vpn.png"
@@ -263,6 +273,25 @@ class Window(Gtk.ApplicationWindow):
         self.infobar.set_no_show_all(True)
         root.pack_start(self.infobar, False, False, 0)
 
+        # Fehlende Pakete (eigener Rechner, wenn wireguard-tools/nftables nur empfohlen waren)
+        self.setupbar = Gtk.InfoBar(message_type=Gtk.MessageType.WARNING)
+        self.setup_label = label("", wrap=True)
+        self.setupbar.get_content_area().add(self.setup_label)
+        self.setupbar.add_button(tr("Installieren …"), 1)
+        self.setupbar.connect("response", lambda *_: self.install_tools())
+        self.setupbar.set_no_show_all(True)
+        root.pack_start(self.setupbar, False, False, 0)
+
+        # Neue Version
+        self.updatebar = Gtk.InfoBar(message_type=Gtk.MessageType.INFO, show_close_button=True)
+        self.update_label = label("", wrap=True)
+        self.updatebar.get_content_area().add(self.update_label)
+        self.updatebar.add_button(tr("Aktualisieren …"), 1)
+        self.updatebar.connect("response", self._on_update_response)
+        self.updatebar.set_no_show_all(True)
+        root.pack_start(self.updatebar, False, False, 0)
+        self.update_release: updates.Release | None = None
+
         self.stack = Gtk.Stack()
         root.pack_start(self.stack, True, True, 0)
         self.stack.add_named(self._empty_page(), "empty")
@@ -292,7 +321,29 @@ class Window(Gtk.ApplicationWindow):
         reload_.set_tooltip_text(tr("Neu laden"))
         reload_.connect("clicked", lambda *_: self.app.refresh())
         box.pack_end(reload_, False, False, 0)
+        box.pack_end(self._menu_button(), False, False, 0)
         return box
+
+    def _menu_button(self):
+        btn = Gtk.MenuButton()
+        btn.set_image(Gtk.Image.new_from_icon_name("open-menu-symbolic", Gtk.IconSize.BUTTON))
+        btn.set_tooltip_text(tr("Menü"))
+        menu = Gtk.Menu()
+        self.menu_items = {}
+        entries = [("updates", tr("Nach Updates suchen …"), lambda: self.app.check_updates(manual=True))]
+        if not self.app.agentpc:  # im Agent-PC ergibt Bony's Agents keinen Sinn
+            entries += [("agents", tr("Bony's Agents – virtuelle Agent-PCs …"), self.show_agents),
+                        ("exceptions", tr("Kill-Switch-Ausnahmen …"), self.edit_exceptions)]
+        entries += [("help", tr("Hilfe"), lambda: host.open_url(HELP_URL)),
+                    ("about", tr("Über Bony's VPN"), self.show_about)]
+        for key, text, fn in entries:
+            item = Gtk.MenuItem(label=text)
+            item.connect("activate", lambda _i, f=fn: f())
+            menu.append(item)
+            self.menu_items[key] = item
+        menu.show_all()
+        btn.set_popup(menu)
+        return btn
 
     def _empty_page(self):
         outer = Gtk.Box(orientation=Gtk.Orientation.VERTICAL, valign=Gtk.Align.CENTER, halign=Gtk.Align.CENTER)
@@ -493,7 +544,8 @@ class Window(Gtk.ApplicationWindow):
             else:
                 self.connect_btn.set_label(tr("Verbinden"))
                 ctx.add_class("bvpn-accent")
-            self.connect_btn.set_sensitive(not busy and not t.error)
+            nm = t.name in self.app.nm_active
+            self.connect_btn.set_sensitive(not busy and not t.error and not (nm and t.active))
             for key in ("rename", "export", "delete"):
                 self.action_btns[key].set_sensitive(t.managed and not busy)
             self.action_btns["edit"].set_sensitive(not busy)
@@ -502,6 +554,10 @@ class Window(Gtk.ApplicationWindow):
                 notes.append(tr("nicht von Bony's VPN angelegt – nur verbinden und trennen"))
             if t.error:
                 notes.append(tr("Fehler in der Konfiguration: {error}", error=t.error))
+            if t.name in self.app.nm_active:
+                notes.append(tr("Wird vom NetworkManager verwaltet – trennen über das Netzwerk-Symbol der Leiste."))
+            if t.dns and self.app.no_resolvconf:
+                notes.append(tr("Für das DNS-Feld fehlt „resolvconf“ (kommt mit systemd-resolved oder openresolv)."))
             self.d_note.set_text("\n".join(notes))
             self.d_note.set_visible(bool(notes))
             self.d_hooks.set_text(tr("Achtung: führt beim Verbinden Befehle als root aus ({hooks}).",
@@ -570,8 +626,38 @@ class Window(Gtk.ApplicationWindow):
             return
         if t.active:
             self.app.disconnect(t.name)
-        else:
+        elif self.confirm_whole_computer() and self.nm_free():
             self.app.connect_tunnel(t.name)
+
+    def confirm_whole_computer(self) -> bool:
+        """Eigener Rechner: Hinweis „gilt für den ganzen Rechner“ – bis „Nicht mehr anzeigen“ angehakt wurde."""
+        if self.app.agentpc or updates.load_settings().get("intro_seen"):
+            return True
+        dlg = Gtk.MessageDialog(transient_for=self, modal=True, message_type=Gtk.MessageType.INFO,
+                                text=tr("Bony's VPN auf diesem Rechner"))
+        dlg.format_secondary_text(tr(host.INTRO))
+        again = Gtk.CheckButton(label=tr("Nicht mehr anzeigen"))
+        dlg.get_message_area().pack_start(again, False, False, 0)
+        dlg.add_button(tr("Abbrechen"), Gtk.ResponseType.CANCEL)
+        dlg.add_button(tr("Weiter"), Gtk.ResponseType.OK)
+        dlg.set_default_response(Gtk.ResponseType.OK)
+        dlg.show_all()
+        ok = dlg.run() == Gtk.ResponseType.OK
+        if ok and again.get_active():
+            updates.set_setting("intro_seen", True)
+        dlg.destroy()
+        return ok
+
+    def nm_free(self) -> bool:
+        """Läuft ein WireGuard-Tunnel des NetworkManager, bissen sich beide (gleiche Routing-Tabelle 51820)."""
+        self.app.nm_active = host.nm_wireguard() if not self.app.agentpc else set()
+        others = sorted(self.app.nm_active)
+        if not others:
+            return True
+        self.message(tr("Gerade ist „{names}“ über den NetworkManager verbunden. Bitte zuerst dort trennen "
+                        "(Netzwerk-Symbol in der Leiste) – zwei Tunnel für den ganzen Rechner stören sich.",
+                        names=", ".join(others)), error=True)
+        return False
 
     def _on_autostart(self, sw, _param) -> None:
         if self.updating or not self.selected:
@@ -583,11 +669,134 @@ class Window(Gtk.ApplicationWindow):
         if self.updating:
             return
         on = sw.get_active()
+        if on and not self.app.agentpc and not self.confirm_killswitch():
+            for ks in (self.ks_empty, self.ks_main):
+                set_quietly(ks["switch"], ks["handler"], False)
+            return
         for ks in (self.ks_empty, self.ks_main):  # beide Schalter (leere und volle Ansicht) gleich
             if ks["switch"] is not sw:
                 set_quietly(ks["switch"], ks["handler"], on)
         self.app.action(None, tr("Kill-Switch an: Ohne Tunnel ist das Internet jetzt gesperrt.") if on
-                        else tr("Kill-Switch aus."), ("killswitch", "on" if on else "off"), pending="killswitch")
+                        else tr("Kill-Switch aus."), self.app.killswitch_args(on), pending="killswitch")
+
+    def confirm_killswitch(self) -> bool:
+        dlg = Gtk.MessageDialog(transient_for=self, modal=True, message_type=Gtk.MessageType.WARNING,
+                                text=tr("Kill-Switch"))
+        dlg.format_secondary_text(tr(host.KILLSWITCH_WARNING))
+        dlg.add_button(tr("Abbrechen"), Gtk.ResponseType.CANCEL)
+        dlg.add_button(tr("Einschalten"), Gtk.ResponseType.OK)
+        dlg.set_default_response(Gtk.ResponseType.CANCEL)
+        ok = dlg.run() == Gtk.ResponseType.OK
+        dlg.destroy()
+        return ok
+
+    def edit_exceptions(self) -> None:
+        """Netze, die trotz Kill-Switch erreichbar bleiben (Drucker, NAS im Heimnetz)."""
+        dlg = Gtk.Dialog(title=tr("Kill-Switch-Ausnahmen"), transient_for=self, modal=True)
+        dlg.add_button(tr("Abbrechen"), Gtk.ResponseType.CANCEL)
+        dlg.add_button(tr("Speichern"), Gtk.ResponseType.OK)
+        dlg.set_default_response(Gtk.ResponseType.OK)
+        box = dlg.get_content_area()
+        box.set_spacing(6)
+        box.set_border_width(12)
+        box.add(label(tr("Netze oder Adressen, die auch ohne Tunnel erreichbar bleiben, durch Komma getrennt "
+                         "(z. B. 192.168.178.0/24 für das Heimnetz). Leer = keine."), wrap=True))
+        entry = Gtk.Entry(text=", ".join(self.app.status.exceptions), activates_default=True)
+        box.add(entry)
+        hint = label("", "bvpn-bad", "bvpn-small", wrap=True)
+        box.add(hint)
+        dlg.show_all()
+        nets = None
+        while dlg.run() == Gtk.ResponseType.OK:
+            try:
+                nets = host.parse_exceptions(entry.get_text())
+                break
+            except ValueError as e:
+                hint.set_text(str(e))
+        dlg.destroy()
+        if nets is None:
+            return
+        if self.app.status.killswitch_enabled:
+            args = ["killswitch", "on", *[x for n in nets for x in ("--exception", n)]] if nets \
+                else ["killswitch", "on", "--no-exceptions"]
+            self.app.action(None, tr("Ausnahmen gespeichert."), tuple(args), pending="killswitch")
+        else:
+            # Ausnahmen gelten erst mit dem Kill-Switch – gespeichert werden sie beim Einschalten
+            self.app.pending_exceptions = nets
+            self.message(tr("Die Ausnahmen gelten, sobald der Kill-Switch an ist."))
+
+    # ----- Menü
+    def show_about(self) -> None:
+        dlg = Gtk.AboutDialog(transient_for=self, modal=True)
+        dlg.set_program_name(APP_NAME)
+        dlg.set_version(__version__)
+        dlg.set_comments(tr("WireGuard-Tunnel verwalten – mit Kill-Switch, für den eigenen Rechner und die "
+                            "Agent-PCs von Bony's Agents."))
+        dlg.set_website(REPO_URL)
+        dlg.set_website_label("GitHub: zappotex/bonys-vpn")
+        dlg.set_copyright(COPYRIGHT)
+        dlg.set_license_type(Gtk.License.GPL_3_0)
+        if APP_ICON.exists():
+            dlg.set_logo(GdkPixbuf.Pixbuf.new_from_file_at_scale(str(APP_ICON), 96, 96, True))
+        dlg.run()
+        dlg.destroy()
+
+    def show_agents(self) -> None:
+        AgentsDialog(self).run_dialog()
+
+    def show_update(self, rel: updates.Release) -> None:
+        self.update_release = rel
+        how = (tr("Sie kommt auch über die Aktualisierungsverwaltung.") if updates.apt_source_configured()
+               else tr("Das Paket wird vor der Installation auf Signatur und Prüfsumme geprüft."))
+        self.update_label.set_text(tr("Bony's VPN {new} ist da (installiert: {old}). {how}",
+                                      new=rel.version, old=__version__, how=how))
+        self.update_label.show()
+        self.updatebar.show()
+
+    def _on_update_response(self, bar, response) -> None:
+        bar.hide()
+        rel = self.update_release
+        if response != 1 or rel is None:
+            if rel is not None and response == Gtk.ResponseType.CLOSE:
+                updates.set_setting("update_skip", rel.version)  # diese Version nicht mehr melden
+            return
+        if not ask(self, tr("Bony's VPN aktualisieren?"),
+                   tr("Version {v} wird installiert – aus der Paketquelle, sonst aus dem offiziellen Release "
+                      "auf GitHub (Signatur und Prüfsumme werden geprüft). Dein Rechner fragt nach dem "
+                      "Administrator-Passwort. Tunnel und Einstellungen bleiben erhalten.", v=rel.version),
+                   tr("Aktualisieren")):
+            return
+        TaskDialog(self, tr("Bony's VPN aktualisieren"),
+                   lambda log, progress: updates.install_package(updates.VPN, log, rel=rel, upgrade=True,
+                                                                 progress=progress),
+                   done_text=tr("Fertig. Die neue Version gilt nach einem Neustart von Bony's VPN."),
+                   restart=True).start()
+
+    def install_tools(self) -> None:
+        missing = host.missing_tools()
+        if not missing:
+            self.setupbar.hide()
+            return
+        if not ask(self, tr("WireGuard installieren?"),
+                   tr("Installiert {pkgs} aus den Paketquellen deines Systems. Dein Rechner fragt nach dem "
+                      "Administrator-Passwort.", pkgs=", ".join(missing)), tr("Installieren")):
+            return
+
+        def work(log, _progress):
+            rc = updates.run_as_root(host.install_tools_script(missing), log)
+            updates._check_rc(rc)
+
+        TaskDialog(self, tr("WireGuard installieren"), work, done_text=tr("Fertig."),
+                   on_done=lambda: (self.update_setup(), self.app.refresh())).start()
+
+    def update_setup(self) -> None:
+        missing = host.missing_tools()
+        if missing:
+            self.setup_label.set_text(tr("Für Bony's VPN fehlen noch Pakete: {pkgs}.", pkgs=", ".join(missing)))
+            self.setup_label.show()
+            self.setupbar.show()
+        else:
+            self.setupbar.hide()
 
     def _on_ip(self, _btn) -> None:
         self.ip_text = tr("wird abgefragt …")
@@ -628,6 +837,8 @@ class Window(Gtk.ApplicationWindow):
         dlg.destroy()
 
     def import_paths(self, paths: list[Path]) -> None:
+        if paths and not self.confirm_whole_computer():
+            return
         items: list[tuple[str, bytes]] = []
         errors = []
         for p in paths:
@@ -799,7 +1010,6 @@ class Editor(Gtk.Dialog):
 
     def __init__(self, win: Window, name: str, show_json: str):
         super().__init__(title=tr("„{name}“ bearbeiten", name=name), transient_for=win, modal=True)
-        import json
 
         data = json.loads(show_json)
         self.win, self.name = win, name
@@ -905,9 +1115,169 @@ class Editor(Gtk.Dialog):
         self.win.app.call(args, text.encode("utf-8"), ok, fail)
 
 
+def ask(parent, title: str, text: str, ok_text: str) -> bool:
+    dlg = Gtk.MessageDialog(transient_for=parent, modal=True, message_type=Gtk.MessageType.QUESTION, text=title)
+    dlg.format_secondary_text(text)
+    dlg.add_button(tr("Abbrechen"), Gtk.ResponseType.CANCEL)
+    dlg.add_button(ok_text, Gtk.ResponseType.OK)
+    dlg.set_default_response(Gtk.ResponseType.OK)
+    ok = dlg.run() == Gtk.ResponseType.OK
+    dlg.destroy()
+    return ok
+
+
+class TaskDialog(Gtk.Dialog):
+    """Installation mit Fortschritt: Zeile für Zeile Protokoll, Balken beim Download, verständlicher Fehler."""
+
+    def __init__(self, win: Window, title: str, work, done_text: str, restart: bool = False, on_done=None):
+        super().__init__(title=title, transient_for=win, modal=True)
+        self.win, self.work, self.done_text, self.on_done = win, work, done_text, on_done
+        self.set_default_size(560, 360)
+        box = self.get_content_area()
+        box.set_spacing(8)
+        box.set_border_width(12)
+        self.headline = label(tr("Bitte warten …"), "bvpn-name", wrap=True)
+        box.pack_start(self.headline, False, False, 0)
+        self.bar = Gtk.ProgressBar(show_text=False)
+        box.pack_start(self.bar, False, False, 0)
+        scroll = Gtk.ScrolledWindow()
+        self.view = styled(Gtk.TextView(editable=False, cursor_visible=False, wrap_mode=Gtk.WrapMode.WORD_CHAR),
+                           "bvpn-mono")
+        scroll.add(self.view)
+        box.pack_start(scroll, True, True, 0)
+        self.restart_btn = self.add_button(tr("Neu starten"), 2) if restart else None
+        self.close_btn = self.add_button(tr("Schließen"), Gtk.ResponseType.CLOSE)
+        self.close_btn.set_sensitive(False)
+        if self.restart_btn is not None:
+            self.restart_btn.set_sensitive(False)
+        self.connect("response", self._on_response)
+        self.connect("delete-event", lambda *_: not self.close_btn.get_sensitive())
+        self._pulse = 0
+        self.ok = None
+
+    def start(self) -> None:
+        self.show_all()
+        self._pulse = GLib.timeout_add(150, self._do_pulse)
+        threading.Thread(target=self._run, daemon=True).start()
+
+    def _do_pulse(self) -> bool:
+        if self.ok is not None:
+            return False
+        if self.bar.get_fraction() == 0 or self._pulsing:
+            self.bar.pulse()
+        return True
+
+    _pulsing = True
+
+    def log(self, line: str) -> None:
+        GLib.idle_add(self._append, line)
+
+    def _append(self, line: str) -> bool:
+        buf = self.view.get_buffer()
+        buf.insert(buf.get_end_iter(), line + "\n")
+        self.view.scroll_to_iter(buf.get_end_iter(), 0, False, 0, 1)
+        return False
+
+    def progress(self, done: int, total: int) -> None:
+        if total:
+            GLib.idle_add(self._set_fraction, done / total)
+
+    def _set_fraction(self, f: float) -> bool:
+        self._pulsing = False
+        self.bar.set_fraction(min(1.0, f))
+        return False
+
+    def _run(self) -> None:
+        try:
+            self.work(self.log, self.progress)
+        except (updates.UpdateError, OSError) as e:
+            GLib.idle_add(self._finish, False, str(e))
+        else:
+            GLib.idle_add(self._finish, True, self.done_text)
+
+    def _finish(self, ok: bool, text: str) -> bool:
+        self.ok = ok
+        self.bar.set_fraction(1.0 if ok else 0.0)
+        self.headline.set_text(text)
+        for c in ("bvpn-ok", "bvpn-bad"):
+            self.headline.get_style_context().remove_class(c)
+        self.headline.get_style_context().add_class("bvpn-ok" if ok else "bvpn-bad")
+        self.close_btn.set_sensitive(True)
+        if self.restart_btn is not None:
+            self.restart_btn.set_sensitive(ok)
+        if ok and self.on_done is not None:
+            self.on_done()
+        return False
+
+    def _on_response(self, _dlg, response) -> None:
+        if not self.close_btn.get_sensitive():
+            return
+        self.destroy()
+        if response == 2:
+            self.win.app.restart()
+
+
+class AgentsDialog(Gtk.Dialog):
+    """Bony's Agents vorstellen – öffnen, wenn installiert, sonst aus der offiziellen Quelle installieren."""
+
+    def __init__(self, win: Window):
+        super().__init__(title=tr("Bony's Agents – virtuelle Agent-PCs"), transient_for=win, modal=True)
+        self.win = win
+        self.set_default_size(520, -1)
+        box = self.get_content_area()
+        box.set_spacing(10)
+        box.set_border_width(16)
+        box.pack_start(label(tr("Bony's Agents – virtuelle Agent-PCs"), "bvpn-name", wrap=True), False, False, 0)
+        box.pack_start(label(tr(
+            "Bony's Agents erstellt per Mausklick eigene virtuelle Rechner (Debian mit Desktop), in denen "
+            "KI-Agenten, Browser und Messenger fertig eingerichtet sind – sauber getrennt von deinem "
+            "eigentlichen System. Bony's VPN ist dort schon dabei."), wrap=True), False, False, 0)
+        yt = Gtk.LinkButton.new_with_label(YOUTUBE_CHANNEL_URL, tr("Videos auf YouTube: @BonysAgents"))
+        yt.set_halign(Gtk.Align.START)
+        box.pack_start(yt, False, False, 0)
+        self.command = host.agents_command()
+        if self.command:
+            self.status = label(tr("Bony's Agents ist installiert."), "bvpn-ok")
+            self.main_btn = styled(Gtk.Button(label=tr("Bony's Agents öffnen")), "bvpn-accent")
+        else:
+            self.status = label(tr("Bony's Agents ist noch nicht installiert."), "bvpn-muted")
+            self.main_btn = styled(Gtk.Button(label=tr("Bony's Agents installieren …")), "bvpn-accent")
+        box.pack_start(self.status, False, False, 0)
+        self.main_btn.set_halign(Gtk.Align.START)
+        self.main_btn.connect("clicked", self._on_main)
+        box.pack_start(self.main_btn, False, False, 0)
+        self.add_button(tr("Schließen"), Gtk.ResponseType.CLOSE)
+        styled(self, "bvpn-window")
+
+    def run_dialog(self) -> None:
+        self.show_all()
+        self.run()
+        self.destroy()
+
+    def _on_main(self, _btn) -> None:
+        if self.command:
+            host.open_agents()
+            self.response(Gtk.ResponseType.CLOSE)
+            return
+        via_apt = updates.apt_source_configured()
+        source = (tr("aus der eingerichteten Paketquelle (apt install bonys-agents)") if via_apt else
+                  tr("als .deb aus dem offiziellen Release auf GitHub (zappotex/BonysAgents). Signatur und "
+                     "Prüfsumme werden vor der Installation geprüft"))
+        if not ask(self, tr("Bony's Agents installieren?"),
+                   tr("Bony's Agents wird {source}. Das Paket ist etwa 200 MB groß und bringt QEMU mit. "
+                      "Dein Rechner fragt nach dem Administrator-Passwort.", source=source),
+                   tr("Installieren")):
+            return
+        self.response(Gtk.ResponseType.CLOSE)
+        TaskDialog(self.win, tr("Bony's Agents installieren"),
+                   lambda log, progress: updates.install_package(updates.AGENTS, log, progress=progress),
+                   done_text=tr("Bony's Agents ist installiert – du findest es im Startmenü.")).start()
+
+
 # ---------------------------------------------------------------- Anwendung
 class App(Gtk.Application):
-    def __init__(self, client: HelperClient | None = None, sys_net: Path = model.SYS_NET, unique: bool = True):
+    def __init__(self, client: HelperClient | None = None, sys_net: Path = model.SYS_NET, unique: bool = True,
+                 agentpc: bool | None = None, auto_status: bool | None = None, update_check: bool = True):
         flags = Gio.ApplicationFlags.HANDLES_COMMAND_LINE
         if not unique:  # Tests: ohne D-Bus-Anmeldung
             flags |= Gio.ApplicationFlags.NON_UNIQUE
@@ -927,6 +1297,14 @@ class App(Gtk.Application):
         self.refresh_again = False
         self.last_refresh = 0.0
         self.started = False
+        self.agentpc = host.is_agentpc() if agentpc is None else agentpc
+        # Ohne polkit-Regel für „status“ (polkit 0.105) fragt jede Abfrage nach dem Passwort – dann
+        # nur bei Aktionen und auf Knopfdruck fragen, Verbunden/Getrennt kommt aus /sys
+        self.auto_status = host.status_without_password() if auto_status is None else auto_status
+        self.update_check = update_check
+        self.nm_active: set[str] = set()   # WireGuard-Verbindungen des NetworkManager (nur eigener Rechner)
+        self.no_resolvconf = host.resolvconf_missing()
+        self.pending_exceptions: list[str] | None = None
 
     # ----- Lebenszyklus
     def do_startup(self) -> None:
@@ -965,13 +1343,46 @@ class App(Gtk.Application):
         self.tray = None
 
     def show_window(self) -> None:
-        if self.window is None:
+        first = self.window is None
+        if first:
             self.window = Window(self)
             self.window.show_all()
             self.window.infobar.hide()
+            self.window.update_setup()
             self.window.show_status(self.status)
         self.window.present()
         self.refresh()
+        if first and self.update_check and updates.auto_check_due():
+            self.check_updates(manual=False)
+
+    def check_updates(self, manual: bool) -> None:
+        skip = None if manual else updates.load_settings().get("update_skip")
+
+        def work():
+            rel = updates.check(skip=skip)
+            updates.set_setting("update_last_check", time.time())
+            GLib.idle_add(done, rel)
+
+        def done(rel) -> bool:
+            if self.window is None:
+                return False
+            if rel is not None:
+                self.window.show_update(rel)
+            elif manual:
+                self.window.message(tr("Bony's VPN ist aktuell (Version {v}).", v=__version__))
+            return False
+
+        if manual and self.window is not None:
+            self.window.message(tr("Suche nach Updates …"))
+        threading.Thread(target=work, daemon=True).start()
+
+    def restart(self) -> None:
+        """Nach einem Update: neue Version starten, diese beenden (eine Instanz je Sitzung)."""
+        gui = "/usr/bin/bonys-vpn-gui"
+        if os.path.exists(gui):
+            subprocess.Popen(["sh", "-c", f"sleep 1; exec {gui}"], start_new_session=True,
+                             stdin=subprocess.DEVNULL, stdout=subprocess.DEVNULL, stderr=subprocess.DEVNULL)
+        self.quit()
 
     def toggle_window(self) -> None:
         if self.window is not None and self.window.get_visible():
@@ -1032,6 +1443,13 @@ class App(Gtk.Application):
             return
         self.action(name, None, ("up", name), tr("verbindet …"))
 
+    def killswitch_args(self, on: bool) -> tuple[str, ...]:
+        if not on or self.pending_exceptions is None:
+            return ("killswitch", "on" if on else "off")
+        nets, self.pending_exceptions = self.pending_exceptions, None
+        return ("killswitch", "on", *[x for n in nets for x in ("--exception", n)]) if nets \
+            else ("killswitch", "on", "--no-exceptions")
+
     def disconnect(self, name: str) -> None:
         if self.busy:
             return
@@ -1057,6 +1475,8 @@ class App(Gtk.Application):
         self.refreshing = False
         self.last_refresh = time.time()
         if data is not None:
+            if not self.agentpc:
+                self.nm_active = host.nm_wireguard()
             self.status = model.Status.from_helper(data)
             self.status.apply_live(model.read_live(self.sys_net))
             self.activity.apply(self.status)
@@ -1089,9 +1509,9 @@ class App(Gtk.Application):
         now = time.time()
         if changed:
             self.refresh()
-        elif visible and self.status.active and now - self.last_refresh > DETAIL_REFRESH:
+        elif self.auto_status and visible and self.status.active and now - self.last_refresh > DETAIL_REFRESH:
             self.refresh()
-        elif self.rxwatch.suspicious(live, now):
+        elif self.auto_status and self.rxwatch.suspicious(live, now):
             self.refresh()   # keine Daten mehr vom Server? → Handshake beim Helfer nachsehen
         elif visible and not self.busy:
             self.window.show_details(self.status)

@@ -147,6 +147,86 @@ EN = {
     "Der Helfer ist nicht installiert.": "The helper is not installed.",
     "Kein Symbol in der Leiste – dieser Desktop zeigt keine Statussymbole.":
         "No tray icon – this desktop does not show status icons.",
+    "Menü": "Menu",
+    "Nach Updates suchen …": "Check for updates …",
+    "Bony's Agents – virtuelle Agent-PCs …": "Bony's Agents – virtual agent PCs …",
+    "Bony's Agents – virtuelle Agent-PCs": "Bony's Agents – virtual agent PCs",
+    "Kill-Switch-Ausnahmen …": "Kill switch exceptions …",
+    "Kill-Switch-Ausnahmen": "Kill switch exceptions",
+    "Hilfe": "Help",
+    "Über Bony's VPN": "About Bony's VPN",
+    "Installieren …": "Install …",
+    "Installieren": "Install",
+    "Aktualisieren …": "Update …",
+    "Aktualisieren": "Update",
+    "Weiter": "Continue",
+    "Einschalten": "Turn on",
+    "Nicht mehr anzeigen": "Don't show again",
+    "Bony's VPN auf diesem Rechner": "Bony's VPN on this computer",
+    "Wird vom NetworkManager verwaltet – trennen über das Netzwerk-Symbol der Leiste.":
+        "Managed by NetworkManager – disconnect via the network icon in the panel.",
+    "Für das DNS-Feld fehlt „resolvconf“ (kommt mit systemd-resolved oder openresolv).":
+        "“resolvconf” is missing for the DNS field (comes with systemd-resolved or openresolv).",
+    "Gerade ist „{names}“ über den NetworkManager verbunden. Bitte zuerst dort trennen (Netzwerk-Symbol in "
+    "der Leiste) – zwei Tunnel für den ganzen Rechner stören sich.":
+        "“{names}” is connected via NetworkManager. Please disconnect it there first (network icon in the "
+        "panel) – two tunnels for the whole computer interfere with each other.",
+    "Netze oder Adressen, die auch ohne Tunnel erreichbar bleiben, durch Komma getrennt (z. B. "
+    "192.168.178.0/24 für das Heimnetz). Leer = keine.":
+        "Networks or addresses that stay reachable without a tunnel, separated by commas (e.g. "
+        "192.168.178.0/24 for the home network). Empty = none.",
+    "Ausnahmen gespeichert.": "Exceptions saved.",
+    "Die Ausnahmen gelten, sobald der Kill-Switch an ist.": "The exceptions apply as soon as the kill switch is on.",
+    "WireGuard-Tunnel verwalten – mit Kill-Switch, für den eigenen Rechner und die Agent-PCs von Bony's Agents.":
+        "Manage WireGuard tunnels – with kill switch, for your own computer and the agent PCs of Bony's Agents.",
+    "Sie kommt auch über die Aktualisierungsverwaltung.": "It also arrives through the update manager.",
+    "Das Paket wird vor der Installation auf Signatur und Prüfsumme geprüft.":
+        "The package's signature and checksum are verified before installing.",
+    "Bony's VPN {new} ist da (installiert: {old}). {how}": "Bony's VPN {new} is available (installed: {old}). {how}",
+    "Bony's VPN aktualisieren?": "Update Bony's VPN?",
+    "Version {v} wird installiert – aus der Paketquelle, sonst aus dem offiziellen Release auf GitHub (Signatur "
+    "und Prüfsumme werden geprüft). Dein Rechner fragt nach dem Administrator-Passwort. Tunnel und "
+    "Einstellungen bleiben erhalten.":
+        "Version {v} will be installed – from the package repository, otherwise from the official release on "
+        "GitHub (signature and checksum are verified). Your computer asks for the administrator password. "
+        "Tunnels and settings are kept.",
+    "Bony's VPN aktualisieren": "Update Bony's VPN",
+    "Fertig. Die neue Version gilt nach einem Neustart von Bony's VPN.":
+        "Done. The new version takes effect after restarting Bony's VPN.",
+    "WireGuard installieren?": "Install WireGuard?",
+    "Installiert {pkgs} aus den Paketquellen deines Systems. Dein Rechner fragt nach dem Administrator-Passwort.":
+        "Installs {pkgs} from your system's package sources. Your computer asks for the administrator password.",
+    "WireGuard installieren": "Install WireGuard",
+    "Fertig.": "Done.",
+    "Für Bony's VPN fehlen noch Pakete: {pkgs}.": "Bony's VPN still needs these packages: {pkgs}.",
+    "Bitte warten …": "Please wait …",
+    "Neu starten": "Restart",
+    "Bony's Agents erstellt per Mausklick eigene virtuelle Rechner (Debian mit Desktop), in denen KI-Agenten, "
+    "Browser und Messenger fertig eingerichtet sind – sauber getrennt von deinem eigentlichen System. "
+    "Bony's VPN ist dort schon dabei.":
+        "Bony's Agents creates virtual computers (Debian with a desktop) with a click, with AI agents, browser "
+        "and messenger set up and ready – cleanly separated from your actual system. Bony's VPN is included.",
+    "Videos auf YouTube: @BonysAgents": "Videos on YouTube: @BonysAgents",
+    "Bony's Agents ist installiert.": "Bony's Agents is installed.",
+    "Bony's Agents öffnen": "Open Bony's Agents",
+    "Bony's Agents ist noch nicht installiert.": "Bony's Agents is not installed yet.",
+    "Bony's Agents installieren …": "Install Bony's Agents …",
+    "aus der eingerichteten Paketquelle (apt install bonys-agents)":
+        "from the configured package repository (apt install bonys-agents)",
+    "als .deb aus dem offiziellen Release auf GitHub (zappotex/BonysAgents). Signatur und Prüfsumme werden vor "
+    "der Installation geprüft":
+        "as a .deb from the official release on GitHub (zappotex/BonysAgents). Signature and checksum are "
+        "verified before installing",
+    "Bony's Agents installieren?": "Install Bony's Agents?",
+    "Bony's Agents wird {source}. Das Paket ist etwa 200 MB groß und bringt QEMU mit. Dein Rechner fragt nach "
+    "dem Administrator-Passwort.":
+        "Bony's Agents will be installed {source}. The package is about 200 MB and brings QEMU along. Your "
+        "computer asks for the administrator password.",
+    "Bony's Agents installieren": "Install Bony's Agents",
+    "Bony's Agents ist installiert – du findest es im Startmenü.":
+        "Bony's Agents is installed – you'll find it in the start menu.",
+    "Bony's VPN ist aktuell (Version {v}).": "Bony's VPN is up to date (version {v}).",
+    "Suche nach Updates …": "Checking for updates …",
 }
 
 _lang: str | None = None

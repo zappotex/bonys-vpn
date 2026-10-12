@@ -1,0 +1,10 @@
+// SPDX-License-Identifier: GPL-3.0-or-later
+// Bony's VPN im Agent-PC von Bony's Agents (Paket bonys-vpn-agentpc): Mitglieder der Gruppe
+// „@GROUP@“ dürfen den Helfer ohne Passwort aufrufen. Bony's Agents trägt den Benutzer des Agent-PCs
+// dort ein. Er hat dort ohnehin sudo ohne Passwort – die Regel erspart nur die Abfrage und ist
+// keine Sicherheitsgrenze. Auf dem eigenen Rechner gehört dieses Paket NICHT installiert.
+polkit.addRule(function(action, subject) {
+    if (action.id == "io.github.bonys-agents.vpn" && subject.isInGroup("@GROUP@")) {
+        return polkit.Result.YES;
+    }
+});

@@ -18,8 +18,8 @@ import pytest
 if sys.platform != "linux":  # Bony's VPN läuft nur unter Linux (fcntl, pwd, wg-quick, nftables)
     pytest.skip("Bony's VPN gibt es nur unter Linux", allow_module_level=True)
 
-from bonys_agents.vpn import cli, helper, install, killswitch  # noqa: E402
-from bonys_agents.vpn import conf as wgconf  # noqa: E402
+from bonys_vpn import __version__, cli, helper, install, killswitch  # noqa: E402
+from bonys_vpn import conf as wgconf  # noqa: E402
 
 VPN_DIR = Path(helper.__file__).parent
 
@@ -395,7 +395,8 @@ def test_killswitch_on_off(env):
     run(env, "import", "weg", data=make_conf(endpoint="unbekannt.example:51820").encode())
     rc, out, err = run(env, "killswitch", "on", "--exception", "10.0.2.0/24")
     assert rc == 0, err
-    assert json.loads(out) == {"enabled": True, "active": True, "exceptions": ["10.0.2.0/24"]}
+    assert json.loads(out) == {"schema": 1, "version": __version__, "enabled": True, "active": True,
+                               "exceptions": ["10.0.2.0/24"]}
     assert "unbekannt.example" in err  # Hinweis, kein Abbruch
     rules = (env.fake_state / "nft_rules").read_text()
     assert "ip daddr 203.0.113.5 udp dport 51820 accept" in rules
@@ -430,7 +431,7 @@ def cli_env(env, tmp_path, monkeypatch):
         #!{sys.executable}
         import socket, sys
         sys.path.insert(0, {str(Path(helper.__file__).parents[2])!r})
-        from bonys_agents.vpn import helper
+        from bonys_vpn import helper
         def resolve(host, port, *a):
             return [(socket.AF_INET, socket.SOCK_DGRAM, 17, "", ("203.0.113.5", port))]
         h = helper.Helper(etc_wg={str(env.etc_wg)!r}, state_dir={str(env.state_dir)!r},
@@ -482,6 +483,107 @@ def test_cli_killswitch_and_delete(cli_env, capsys):
     assert not (cli_env.etc_wg / "fritz.conf").exists()
 
 
+# ---------- Offizielle Schnittstelle (docs/cli.md) ----------
+# Diese Felder sind zugesagt. Wer sie ändert oder entfernt, erhöht bonys_vpn.SCHEMA und passt docs/cli.md an.
+STATUS_KEYS = {"schema", "version", "tunnels", "active", "killswitch"}
+TUNNEL_KEYS = {"name", "active", "autostart", "managed", "addresses", "dns", "peers", "hooks"}
+LIVE_KEYS = {"handshake", "rx", "tx"}
+PEER_KEYS = {"public_key", "endpoint", "allowed_ips"}
+KS_KEYS = {"enabled", "active", "exceptions"}
+
+
+def _json_out(capsys, argv):
+    rc = cli.main(argv)
+    return rc, json.loads(capsys.readouterr().out)
+
+
+def test_interface_status_json(cli_env, capsys):
+    from bonys_vpn import SCHEMA
+
+    cli_env.import_conf("fritz", make_conf().encode())
+    cli_env.import_conf("zweit", make_conf().encode())
+    rc, data = _json_out(capsys, ["up", "fritz", "--json"])
+    assert rc == 0 and data == {"schema": SCHEMA, "version": __version__, "ok": True}
+    rc, data = _json_out(capsys, ["status", "--json"])
+    assert rc == 0 and STATUS_KEYS <= set(data) and data["schema"] == SCHEMA == 1
+    assert data["active"] == "fritz" and KS_KEYS <= set(data["killswitch"])
+    t = {x["name"]: x for x in data["tunnels"]}
+    assert TUNNEL_KEYS | LIVE_KEYS <= set(t["fritz"]) and TUNNEL_KEYS <= set(t["zweit"])
+    assert PEER_KEYS <= set(t["fritz"]["peers"][0])
+    assert t["fritz"]["handshake"] == 1700000000 and t["fritz"]["rx"] == 2048 and t["fritz"]["tx"] == 1024
+    assert t["fritz"]["peers"][0]["endpoint"] == "vpn.example.net:51820"
+    assert PRIV not in json.dumps(data) and PSK not in json.dumps(data)
+    rc, data = _json_out(capsys, ["status", "fritz", "--json"])
+    assert [x["name"] for x in data["tunnels"]] == ["fritz"]
+
+
+def test_interface_other_commands_json(cli_env, capsys, monkeypatch):
+    from bonys_vpn import SCHEMA
+
+    rc, data = _json_out(capsys, ["version", "--json"])
+    assert rc == 0 and data["schema"] == SCHEMA and data["version"] == __version__ and data["helper"]
+    monkeypatch.setattr(sys, "stdin", type("S", (), {"buffer": io.BytesIO(make_conf().encode())})())
+    rc, data = _json_out(capsys, ["import", "-", "--name", "vonstdin", "--json"])
+    assert rc == 0 and data["imported"] == [{"name": "vonstdin", "ok": True}]
+    rc, data = _json_out(capsys, ["list", "--json"])
+    assert data["tunnels"] == [{"name": "vonstdin", "active": False, "autostart": False, "managed": True}]
+    rc, data = _json_out(capsys, ["autostart", "vonstdin", "on", "--json"])
+    assert rc == 0 and data["ok"] is True
+    rc, data = _json_out(capsys, ["killswitch", "on", "--ausnahme", "10.0.2.0/24", "--json"])
+    assert rc == 0 and data["enabled"] is True and data["exceptions"] == ["10.0.2.0/24"] and data["schema"] == SCHEMA
+    rc, data = _json_out(capsys, ["killswitch", "status", "--json"])
+    assert KS_KEYS <= set(data)
+    rc, data = _json_out(capsys, ["killswitch", "on", "--keine-ausnahmen", "--json"])
+    assert data["exceptions"] == []
+    rc, data = _json_out(capsys, ["killswitch", "aus", "--json"])
+    assert data["enabled"] is False
+    rc, data = _json_out(capsys, ["down", "--json"])
+    assert rc == 0 and data["ok"] is True
+    rc, data = _json_out(capsys, ["rename", "vonstdin", "neu", "--json"])
+    assert rc == 0
+    rc, data = _json_out(capsys, ["delete", "neu", "--ja", "--json"])
+    assert rc == 0 and data["ok"] is True
+    # Fehler: Code 1, Meldung als JSON (ohne Werte aus der Konfiguration)
+    rc, data = _json_out(capsys, ["up", "gibtsnicht", "--json"])
+    assert rc == 1 and data["schema"] == SCHEMA and "gibtsnicht" in data["error"]
+    monkeypatch.setattr(sys, "stdin", type("S", (), {"buffer": io.BytesIO(b"kaputt")})())
+    rc, data = _json_out(capsys, ["import", "-", "--name", "x", "--json"])
+    assert rc == 1 and data["imported"][0]["ok"] is False
+
+
+def test_interface_stdin_needs_name(cli_env, capsys, monkeypatch):
+    monkeypatch.setattr(sys, "stdin", type("S", (), {"buffer": io.BytesIO(make_conf().encode())})())
+    assert cli.main(["import", "-"]) == 1
+    assert "--name" in capsys.readouterr().err
+
+
+def test_interface_version_flag(capsys):
+    with pytest.raises(SystemExit) as e:
+        cli.main(["--version"])
+    assert e.value.code == 0 and capsys.readouterr().out.strip() == f"bonys-vpn {__version__}"
+
+
+def test_interface_documented():
+    """Jeder Befehl der Kommandozeile und jedes zugesagte Feld steht in docs/cli.md."""
+    doc = (VPN_DIR.parents[1] / "docs/cli.md").read_text()
+    sub = next(a for a in cli.parser()._actions if a.dest == "cmd")
+    for name in sub.choices:
+        assert f"bonys-vpn {name}" in doc, name
+    for key in STATUS_KEYS | TUNNEL_KEYS | LIVE_KEYS | PEER_KEYS | KS_KEYS | {"error", "ok", "imported", "helper"}:
+        assert f"`{key}`" in doc, key
+    assert "Schema-Version 1" in doc
+
+
+def test_helper_prefers_package_over_legacy(monkeypatch, tmp_path):
+    monkeypatch.delenv("BONYS_VPN_HELPER", raising=False)
+    monkeypatch.setattr(cli, "HELPER", str(tmp_path / "neu"))
+    monkeypatch.setattr(cli, "LEGACY_HELPER", str(tmp_path / "alt"))
+    (tmp_path / "alt").write_text("")
+    assert cli.helper_path() == str(tmp_path / "alt")
+    (tmp_path / "neu").write_text("")
+    assert cli.helper_path() == str(tmp_path / "neu")
+
+
 def test_cli_human_formats():
     assert cli.human_bytes(512) == "512 B"
     assert cli.human_bytes(3 * 1024 * 1024) == "3,0 MiB"
@@ -489,40 +591,85 @@ def test_cli_human_formats():
     assert cli.human_age(100, now=190) == "vor 1 min"
 
 
-# ---------- Installation und Eigenständigkeit ----------
-def test_install_into_root(tmp_path):
-    written = install.install("agent", "agent", tmp_path, as_root=False)
+# ---------- Paketdateien und Eigenständigkeit ----------
+def test_build_package_tree(tmp_path):
+    written = install.build("bonys-vpn", tmp_path)
     helper_file = tmp_path / install.HELPER
     assert helper_file in written and os.access(helper_file, os.X_OK)
     assert helper_file.read_text().startswith("#!/usr/bin/python3 -I")
+    assert 'sys.path.insert(0, "/usr/lib/bonys-vpn")' in helper_file.read_text()
+    for rel in (install.CLI, install.GUI):
+        assert os.access(tmp_path / rel, os.X_OK)
     policy = (tmp_path / install.POLICY).read_text()
-    assert "<annotate key=\"org.freedesktop.policykit.exec.path\">/usr/local/sbin/bonys-vpn-helper<" in policy
-    assert "auth_admin_keep" in policy
+    assert '<annotate key="org.freedesktop.policykit.exec.path">/usr/sbin/bonys-vpn-helper<' in policy
+    assert "<allow_active>auth_admin_keep</allow_active>" in policy and "@" not in policy
     rules = (tmp_path / install.RULES).read_text()
-    assert 'subject.user == "agent"' in rules and "polkit.Result.YES" in rules
-    cfg = json.loads((tmp_path / install.STATE_DIR / "killswitch.json").read_text())
-    assert cfg == {"enabled": False, "exceptions": ["10.0.2.0/24"]}
-    assert stat.S_IMODE((tmp_path / "etc/wireguard").stat().st_mode) == 0o700
+    assert 'command_line") == "/usr/sbin/bonys-vpn-helper status"' in rules and "AUTH_ADMIN_KEEP" in rules
+    assert "subject.user" not in rules and "isInGroup" not in rules  # Host: nie ohne Passwort
+    desktop = (tmp_path / install.DESKTOP).read_text()
+    assert "Exec=/usr/bin/bonys-vpn-gui\n" in desktop and "Icon=bonys-vpn\n" in desktop
+    assert (tmp_path / install.ICON).read_bytes()[:4] == b"\x89PNG"
+    assert "ExecStart=/usr/sbin/nft -f /etc/bonys-vpn/killswitch.nft" in (tmp_path / install.UNIT).read_text()
     for m in install.MODULES:
-        assert (tmp_path / install.LIB_DIR / install.PKG / m).exists()
-    # Host: andere Regel, keine Ausnahmen; vorhandene Kill-Switch-Einstellung bleibt
-    host_root = tmp_path / "host"
-    install.install("host", root=host_root, as_root=False)
-    assert "AUTH_ADMIN_KEEP" in (host_root / install.RULES).read_text()
-    assert json.loads((host_root / install.STATE_DIR / "killswitch.json").read_text())["exceptions"] == []
+        assert (tmp_path / install.LIB / install.PKG / m).exists()
+    assert not (tmp_path / "etc").exists()  # keine Conffiles im Hauptpaket
+    assert not (tmp_path / install.AGENT_RULES).exists()
+
+
+def test_build_agentpc_tree(tmp_path):
+    install.build("bonys-vpn-agentpc", tmp_path)
+    rules = (tmp_path / install.AGENT_RULES).read_text()
+    assert 'subject.isInGroup("bonys-vpn")' in rules and "polkit.Result.YES" in rules
+    assert install.AGENT_RULES.split("/")[-1] < install.RULES.split("/")[-1]  # wird vor host.rules ausgewertet
+    auto = (tmp_path / install.AGENT_AUTOSTART).read_text()
+    assert "Exec=/usr/bin/bonys-vpn-gui --tray" in auto and "NoDisplay=true" in auto
+    assert (tmp_path / install.AGENT_MARKER).is_file()
+    assert not (tmp_path / install.HELPER).exists()
     with pytest.raises(ValueError):
-        install.install("agent", 'agent"; evil', tmp_path, as_root=False)
-    install.uninstall(tmp_path)
-    assert not helper_file.exists() and not (tmp_path / install.LIB_DIR).exists()
+        install.build("etwas", tmp_path)
+
+
+def test_remove_legacy_keeps_tunnels(tmp_path):
+    """Alte Installation (/usr/local, Bony's Agents bis 0.14) weg – Tunnel und Kill-Switch-Zustand bleiben."""
+    for rel in (*install.LEGACY["files"], install.LEGACY["unit"], install.LEGACY["rules"],
+                f"{install.LEGACY['lib']}/bonys_vpn/cli.py", "etc/wireguard/fritz.conf",
+                "etc/bonys-vpn/killswitch.json"):
+        p = tmp_path / rel
+        p.parent.mkdir(parents=True, exist_ok=True)
+        p.write_text("x")
+    removed = install.remove_legacy(tmp_path)
+    assert "/usr/local/lib/bonys-vpn" in removed and "/etc/systemd/system/bonys-vpn-killswitch.service" in removed
+    for rel in (*install.LEGACY["files"], install.LEGACY["unit"], install.LEGACY["lib"]):
+        assert not (tmp_path / rel).exists()
+    for rel in ("etc/wireguard/fritz.conf", "etc/bonys-vpn/killswitch.json", install.LEGACY["rules"]):
+        assert (tmp_path / rel).exists()
+    assert install.remove_legacy(tmp_path) == []  # zweimal geht
+
+
+def test_migrate_agent_rule(tmp_path):
+    rules = tmp_path / install.LEGACY["rules"]
+    rules.parent.mkdir(parents=True)
+    rules.write_text((VPN_DIR.parent.parent / "tests/data/legacy-agent.rules").read_text())
+    assert install.migrate_agent_rule(tmp_path, live=False) == "agent"
+    assert not rules.exists()
+    assert install.migrate_agent_rule(tmp_path, live=False) is None
+    rules.write_text("// eine fremde Regel\n")
+    assert install.migrate_agent_rule(tmp_path, live=False) is None and rules.exists()
+
+
+def test_install_main_refuses_root_paths(tmp_path, capsys):
+    assert install.main(["--package", "bonys-vpn"]) == 1
+    assert "--root" in capsys.readouterr().err
+    assert install.main(["--package", "bonys-vpn-agentpc", "--root", str(tmp_path)]) == 0
 
 
 def test_installed_copy_runs_standalone(tmp_path):
-    """Die kopierten Dateien laufen ohne Bony's Agents (eigener Paketname, nur Standardbibliothek)."""
-    install.install("agent", "agent", tmp_path, as_root=False)
-    lib = tmp_path / install.LIB_DIR
+    """Die Paketdateien laufen mit dem System-Python, nur Standardbibliothek."""
+    install.build("bonys-vpn", tmp_path)
+    lib = tmp_path / install.LIB
     proc = subprocess.run([sys.executable, "-I", "-c",
                            f"import sys; sys.path.insert(0, {str(lib)!r}); "
-                           "from bonys_vpn import conf, cli, helper; print(conf.check_name('wg0'))"],
+                           "from bonys_vpn import conf, cli, helper, host, updates; print(conf.check_name('wg0'))"],
                           capture_output=True, text=True)
     assert proc.returncode == 0, proc.stderr
     assert proc.stdout.strip() == "wg0"

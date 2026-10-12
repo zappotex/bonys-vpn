@@ -3,8 +3,8 @@
  "http://www.freedesktop.org/standards/PolicyKit/1/policyconfig.dtd">
 <!-- SPDX-License-Identifier: GPL-3.0-or-later -->
 <policyconfig>
-  <vendor>Bony's Agents</vendor>
-  <vendor_url>https://github.com/zappotex/BonysAgents</vendor_url>
+  <vendor>Bony's VPN</vendor>
+  <vendor_url>https://github.com/zappotex/bonys-vpn</vendor_url>
   <icon_name>network-vpn</icon_name>
   <action id="io.github.bonys-agents.vpn">
     <description>Manage WireGuard tunnels with Bony's VPN</description>

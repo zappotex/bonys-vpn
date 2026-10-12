@@ -1,6 +1,6 @@
 # SPDX-License-Identifier: GPL-3.0-or-later
-"""Oberfläche von Bony's VPN: Logik ohne GTK (model.py), Installation, Nutzlast für den Agent-PC
-und ein Smoke-Test der echten GTK-Oberfläche ohne Bildschirm (Broadway-Backend)."""
+"""Oberfläche von Bony's VPN: Logik ohne GTK (model.py) und ein Smoke-Test der echten GTK-Oberfläche
+ohne Bildschirm (Broadway-Backend) – im Agent-PC und auf dem eigenen Rechner."""
 import base64
 import io
 import itertools
@@ -10,7 +10,6 @@ import shutil
 import stat
 import subprocess
 import sys
-import tarfile
 import textwrap
 from pathlib import Path
 
@@ -19,9 +18,8 @@ import pytest
 if sys.platform != "linux":
     pytest.skip("Bony's VPN gibt es nur unter Linux", allow_module_level=True)
 
-from bonys_agents import apps  # noqa: E402
-from bonys_agents.vpn import conf as wgconf  # noqa: E402
-from bonys_agents.vpn import install, model  # noqa: E402
+from bonys_vpn import conf as wgconf  # noqa: E402
+from bonys_vpn import model  # noqa: E402
 
 ROOT = Path(__file__).resolve().parents[1]
 
@@ -97,7 +95,7 @@ def test_all_texts_of_the_gui_are_translated():
     import ast
 
     for name in ("gui.py", "model.py"):
-        tree = ast.parse((ROOT / "src/bonys_agents/vpn" / name).read_text())
+        tree = ast.parse((ROOT / "src/bonys_vpn" / name).read_text())
         for node in ast.walk(tree):
             if isinstance(node, ast.Call) and getattr(node.func, "id", "") == "tr" and node.args:
                 arg = node.args[0]
@@ -329,113 +327,6 @@ def test_write_private(tmp_path):
     assert [p.name for p in tmp_path.iterdir()] == ["out.conf"]  # keine Reste
 
 
-# ---------- Installation und Nutzlast ----------
-def test_install_gui_files(tmp_path):
-    install.install("agent", "agent", tmp_path, as_root=False, autostart_tray=True)
-    gui = tmp_path / install.GUI
-    assert os.access(gui, os.X_OK) and "from bonys_vpn.gui import main" in gui.read_text()
-    desktop = (tmp_path / install.DESKTOP).read_text()
-    assert "Exec=/usr/local/bin/bonys-vpn-gui\n" in desktop
-    icon = desktop.split("Icon=")[1].split("\n")[0]
-    assert (tmp_path / icon.lstrip("/")).is_file()
-    auto = (tmp_path / install.AUTOSTART).read_text()
-    assert "Exec=/usr/local/bin/bonys-vpn-gui --tray" in auto and "NoDisplay=true" in auto
-    for rel in install.GUI_DATA:
-        assert (tmp_path / install.LIB_DIR / install.PKG / "data" / rel).is_file()
-    # ohne --autostart-tray kein Autostart (z. B. Host), ein alter wird entfernt
-    install.install("agent", "agent", tmp_path, as_root=False)
-    assert not (tmp_path / install.AUTOSTART).exists()
-    install.install("agent", "agent", tmp_path, as_root=False, autostart_tray=True)
-    install.uninstall(tmp_path)
-    for rel in (install.GUI, install.DESKTOP, install.AUTOSTART):
-        assert not (tmp_path / rel).exists()
-
-
-def test_vpn_app_spec():
-    spec = apps.APPS["vpn"]
-    assert spec.name == "WireGuard VPN (Bony's VPN)" and spec.category == apps.PROGRAM and not spec.default
-    assert spec.launcher == "io.github.bonys_agents.vpn.desktop"
-    for pkg in ("wireguard-tools", "nftables", "python3-gi", "gir1.2-gtk-3.0", "gir1.2-ayatanaappindicator3-0.1"):
-        assert pkg in spec.install
-    assert "openresolv" not in spec.install and "pip " not in spec.install
-    assert "--variant agent --user \"$AGENT_USER\" --autostart-tray" in spec.install
-    assert 'cp /usr/local/share/applications/io.github.bonys_agents.vpn.desktop "$DESKTOP_DIR/"' in spec.install
-
-
-def _payload_files() -> dict[str, bytes]:
-    raw = base64.b64decode(apps.vpn_payload())
-    with tarfile.open(fileobj=io.BytesIO(raw), mode="r:gz") as tar:
-        return {m.name: tar.extractfile(m).read() for m in tar.getmembers() if m.isfile()}
-
-
-def test_payload_contains_our_code_only():
-    files = _payload_files()
-    vpn = ROOT / "src/bonys_agents/vpn"
-    expected = {f"bonys_vpn/{p.relative_to(vpn).as_posix()}" for p in vpn.rglob("*")
-                if p.is_file() and "__pycache__" not in p.parts}
-    assert set(files) == expected
-    for m in install.MODULES:
-        assert files[f"bonys_vpn/{m}"] == (vpn / m).read_bytes()
-    assert apps.vpn_payload() == apps.vpn_payload()  # reproduzierbar
-
-
-def test_payload_installs_and_runs_standalone(tmp_path):
-    """Das Installationsskript aus der App-Registry entpackt den Code und installiert ihn – ohne Bony's Agents."""
-    src = tmp_path / "src"
-    src.mkdir()
-    for name, data in _payload_files().items():
-        p = src / name
-        p.parent.mkdir(parents=True, exist_ok=True)
-        p.write_bytes(data)
-    root = tmp_path / "root"
-    proc = subprocess.run([sys.executable, "-I", str(src / "bonys_vpn/install.py"), "--variant", "agent",
-                           "--root", str(root), "--autostart-tray"], capture_output=True, text=True)
-    assert proc.returncode == 0, proc.stderr
-    lib = root / install.LIB_DIR
-    proc = subprocess.run([sys.executable, "-I", "-c", f"import sys; sys.path.insert(0, {str(lib)!r}); "
-                           "from bonys_vpn import model; print(model.suggest_name('Büro VPN'))"],
-                          capture_output=True, text=True)
-    assert proc.returncode == 0, proc.stderr
-    assert proc.stdout.strip() == "B_ro_VPN"
-
-
-def test_install_snippet_extracts_payload(tmp_path):
-    """Der Bash-Teil des Installationsschritts: base64 → tar.gz → install.py (apt/systemctl als Attrappen)."""
-    if not shutil.which("bash") or not shutil.which("base64"):
-        pytest.skip("bash/base64 fehlen")
-    fake = tmp_path / "bin"
-    fake.mkdir()
-    log = tmp_path / "calls.log"
-    for tool in ("apt-get", "systemctl"):
-        (fake / tool).write_text(f"#!/bin/sh\necho {tool} \"$@\" >> {log}\n")
-        (fake / tool).chmod(0o755)
-    py = fake / "python3"
-    # install.py nicht nach / schreiben lassen: --root in ein Testverzeichnis umleiten
-    py.write_text(f"#!/bin/sh\nexec {sys.executable} \"$@\" --root {tmp_path / 'root'}\n")
-    py.chmod(0o755)
-    desk = tmp_path / "desk"
-    desk.mkdir()
-    script = apps.VPN.install.replace("/usr/local/share/applications/",
-                                      f"{tmp_path / 'root'}/usr/local/share/applications/")
-    env = {"PATH": f"{fake}:/usr/bin:/bin", "AGENT_USER": "agent", "DESKTOP_DIR": str(desk), "HOME": str(tmp_path)}
-    proc = subprocess.run(["bash", "-e", "-c", script], capture_output=True, text=True, env=env)
-    assert proc.returncode == 0, proc.stderr
-    assert (tmp_path / "root" / install.GUI).exists()
-    assert (desk / "io.github.bonys_agents.vpn.desktop").exists()
-    calls = log.read_text()
-    assert "apt-get install -y wireguard-tools" in calls and "systemctl daemon-reload" in calls
-
-
-def test_cloud_init_carries_payload():
-    """Beim Erstellen kommt der Code über das Seed-ISO (user-data) in den Agent-PC."""
-    from bonys_agents import cloudinit
-
-    cfg = cloudinit.GuestConfig(hostname="t", username="agent", password="x", apps=apps.resolve(["vpn"]))
-    doc = json.loads(cloudinit.user_data(cfg).split("\n", 1)[1])
-    script = next(f["content"] for f in doc["write_files"] if f["path"] == cloudinit.PROVISION_SCRIPT)
-    assert "BONYS_VPN_PAYLOAD" in script and apps.vpn_payload().split("\n")[0] in script
-
-
 # ---------- Smoke-Test der GTK-Oberfläche ----------
 SMOKE = r"""
 import json, sys, time
@@ -443,7 +334,7 @@ sys.path.insert(0, sys.argv[1])
 import gi
 gi.require_version("Gtk", "3.0")
 from gi.repository import GLib, Gtk
-from bonys_agents.vpn import gui, model, conf as wgconf
+from bonys_vpn import gui, model, conf as wgconf
 
 CONF = sys.argv[2]
 STATUS = json.loads(sys.argv[3])
@@ -469,7 +360,8 @@ class Fake:
 
 model.set_language(sys.argv[4])
 fake = Fake()
-app = gui.App(client=fake, sys_net=gui.Path("/nonexistent"), unique=False)
+app = gui.App(client=fake, sys_net=gui.Path("/nonexistent"), unique=False, agentpc=True, auto_status=True,
+              update_check=False)
 errors = []
 
 def check(cond, what):
@@ -599,3 +491,121 @@ def test_gui_smoke_offscreen(broadway, lang, tmp_path):
                           capture_output=True, text=True, env=env, timeout=60)
     assert "SMOKE-OK" in proc.stdout, proc.stdout + proc.stderr
     assert PRIV not in proc.stdout + proc.stderr
+
+
+SMOKE_HOST = r"""
+import json, sys
+sys.path.insert(0, sys.argv[1])
+import gi
+gi.require_version("Gtk", "3.0")
+from gi.repository import GLib, Gtk
+from bonys_vpn import gui, host, model, updates
+
+STATUS = json.loads(sys.argv[2])
+calls = []
+
+class Fake:
+    def status(self):
+        return STATUS
+    def run(self, *args, data=None):
+        calls.append(args)
+        return ""
+
+model.set_language("de")
+answers = {"killswitch": False, "whole": False}
+gui.Window.confirm_killswitch = lambda self: answers["killswitch"]
+gui.Window.confirm_whole_computer = lambda self: answers["whole"]
+host.nm_wireguard = lambda *a: {"nm-tunnel"}
+errors = []
+
+def check(cond, what):
+    if not cond:
+        errors.append(what)
+
+app = gui.App(client=Fake(), sys_net=gui.Path("/nonexistent"), unique=False, agentpc=False, auto_status=False,
+              update_check=False)
+
+def step1():
+    w = app.window
+    check(set(w.menu_items) == {"updates", "agents", "exceptions", "help", "about"}, f"Menü: {set(w.menu_items)}")
+    app.agentpc = True   # Agent-PC: Menü ohne Bony's Agents
+    w._menu_button()
+    check("agents" not in w.menu_items and "exceptions" not in w.menu_items, "Agent-PC zeigt Bony's Agents")
+    app.agentpc = False
+    # Kill-Switch auf dem eigenen Rechner: abgelehnte Warnung → Schalter zurück, kein Aufruf
+    w.ks_empty["switch"].set_active(True)
+    check(not w.ks_empty["switch"].get_active(), "Schalter nach Ablehnen nicht zurückgesetzt")
+    check(not [c for c in calls if c[0] == "killswitch"], "Kill-Switch trotz Ablehnen geschaltet")
+    answers["killswitch"] = True
+    app.pending_exceptions = ["192.168.178.0/24"]
+    w.ks_empty["switch"].set_active(True)
+    # Verbinden: ohne Bestätigung des Hinweises kein Aufruf
+    w.selected = "fritz"
+    w._on_connect(None)
+    check(not [c for c in calls if c[0] == "up"], "verbunden ohne Hinweis")
+    answers["whole"] = True
+    w._on_connect(None)   # NetworkManager-Tunnel aktiv → Bitte um Trennen, kein Aufruf
+    check(not [c for c in calls if c[0] == "up"], "verbunden trotz NetworkManager-Tunnel")
+    check("NetworkManager" in w.info_label.get_text(), "Hinweis NetworkManager fehlt")
+    host.nm_wireguard = lambda *a: set()
+    w._on_connect(None)
+    # Bony's Agents: nicht installiert → „installieren“, installiert → „öffnen“
+    host.agents_command = lambda home=None: None
+    d = gui.AgentsDialog(w)
+    check(d.main_btn.get_label() == "Bony's Agents installieren …", f"Knopf: {d.main_btn.get_label()}")
+    d.destroy()
+    host.agents_command = lambda home=None: ["/opt/bonys-agents/BonysAgents"]
+    d = gui.AgentsDialog(w)
+    check(d.main_btn.get_label() == "Bony's Agents öffnen", f"Knopf: {d.main_btn.get_label()}")
+    d.destroy()
+    # Update-Leiste
+    w.show_update(updates.Release("9.9.9", "v9.9.9"))
+    check(w.updatebar.get_visible() and "9.9.9" in w.update_label.get_text(), "Update-Leiste fehlt")
+    # Fortschrittsfenster: Protokoll, Balken, Erfolg
+    def work(log, progress):
+        log("Lade bonys-agents_0.15.0_amd64.deb …")
+        progress(50, 100)
+    t = gui.TaskDialog(w, "Test", work, done_text="Fertig.")
+    t.start()
+    GLib.timeout_add(600, lambda: step2(t))
+    return False
+
+def step2(t):
+    check(t.ok is True and t.close_btn.get_sensitive(), "Fortschrittsfenster nicht fertig")
+    buf = t.view.get_buffer()
+    check("bonys-agents" in buf.get_text(buf.get_start_iter(), buf.get_end_iter(), False), "Protokoll fehlt")
+    t.destroy()
+    def fail(log, progress):
+        raise updates.UpdateError("Signaturprüfung fehlgeschlagen")
+    t2 = gui.TaskDialog(app.window, "Test", fail, done_text="Fertig.")
+    t2.start()
+    GLib.timeout_add(600, lambda: step3(t2))
+    return False
+
+def step3(t2):
+    check(t2.ok is False and "Signaturprüfung" in t2.headline.get_text(), "Fehler nicht verständlich angezeigt")
+    t2.destroy()
+    ks = [c for c in calls if c[0] == "killswitch"]
+    check(ks == [("killswitch", "on", "--exception", "192.168.178.0/24")], f"Kill-Switch-Aufrufe: {ks}")
+    check([c for c in calls if c[0] == "up"] == [("up", "fritz")], f"Verbinden: {calls}")
+    print("SMOKE-OK" if not errors else "SMOKE-FEHLER: " + "; ".join(errors))
+    app.quit()
+    return False
+
+GLib.timeout_add(800, step1)
+GLib.timeout_add(15000, lambda: (print("SMOKE-TIMEOUT"), app.quit()))
+app.run(["bonys-vpn-gui"])
+"""
+
+
+def test_gui_smoke_host(broadway, tmp_path):
+    """Eigener Rechner: Menü mit Bony's Agents, Warnungen, NetworkManager, Update-Leiste, Fortschritt."""
+    py, display, runtime = broadway
+    env = dict(os.environ, GDK_BACKEND="broadway", BROADWAY_DISPLAY=display, NO_AT_BRIDGE="1",
+               XDG_RUNTIME_DIR=str(runtime), XDG_CONFIG_HOME=str(tmp_path))
+    env.pop("DBUS_SESSION_BUS_ADDRESS", None)
+    status = status_json(active=None)
+    status["killswitch"] = {"enabled": False, "active": False, "exceptions": []}
+    proc = subprocess.run([py, "-c", SMOKE_HOST, str(ROOT / "src"), json.dumps(status)],
+                          capture_output=True, text=True, env=env, timeout=60)
+    assert "SMOKE-OK" in proc.stdout, proc.stdout + proc.stderr

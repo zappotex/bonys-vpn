@@ -4,6 +4,9 @@
 Läuft als normaler Benutzer und ruft für alles, was root braucht, ``bonys-vpn-helper`` über
 ``pkexec`` auf. Konfigurationsdateien liest die Kommandozeile selbst (mit den Rechten des
 Benutzers) und reicht sie über die Standardeingabe weiter – der Helfer bekommt nie einen Pfad.
+
+Die Befehle und ihr JSON (``--json``) sind die offizielle Schnittstelle für andere Programme wie
+Bony's Agents – beschrieben in docs/cli.md, Schema-Version ``bonys_vpn.SCHEMA``.
 """
 
 from __future__ import annotations
@@ -18,10 +21,12 @@ import time
 import zipfile
 from pathlib import Path
 
+from . import SCHEMA, __version__
 from . import conf as wgconf
 
-HELPER = "/usr/local/sbin/bonys-vpn-helper"     # install.py (Agent-PC)
-DEB_HELPER = "/usr/sbin/bonys-vpn-helper"        # .deb von Bony's Agents (eigener Rechner)
+HELPER = "/usr/sbin/bonys-vpn-helper"            # Paket bonys-vpn
+# alte Installation im Agent-PC (install.py aus Bony's Agents bis 0.14)
+LEGACY_HELPER = "/usr/local/sbin/bonys-vpn-helper"
 
 
 def clean_env() -> dict[str, str]:
@@ -37,10 +42,10 @@ class CliError(Exception):
 
 
 def helper_path() -> str:
-    """Pfad des Helfers: ``BONYS_VPN_HELPER``, sonst der installierte (install.py vor .deb)."""
+    """Pfad des Helfers: ``BONYS_VPN_HELPER``, sonst der aus dem Paket, sonst eine alte Installation."""
     if os.environ.get("BONYS_VPN_HELPER"):
         return os.environ["BONYS_VPN_HELPER"]
-    return next((p for p in (HELPER, DEB_HELPER) if Path(p).exists()), HELPER)
+    return next((p for p in (HELPER, LEGACY_HELPER) if Path(p).exists()), HELPER)
 
 
 def call(args: list[str], data: bytes | None = None) -> str:
@@ -94,8 +99,14 @@ def human_age(ts: int | None, now: float | None = None) -> str:
     return f"vor {s // 3600} h {s % 3600 // 60} min"
 
 
-def confs_from(path: Path) -> list[tuple[str, bytes]]:
-    """(Vorschlag für den Namen, Inhalt) aus einer .conf oder einer ZIP-Datei mit .conf-Dateien."""
+def confs_from(path: Path, stdin=None) -> list[tuple[str, bytes]]:
+    """(Vorschlag für den Namen, Inhalt) aus einer .conf oder einer ZIP-Datei mit .conf-Dateien.
+    ``-`` liest eine .conf von der Standardeingabe (Name dann mit ``--name``)."""
+    if str(path) == "-":
+        data = (stdin or sys.stdin.buffer).read(wgconf.MAX_SIZE + 1)
+        if len(data) > wgconf.MAX_SIZE:
+            raise CliError("Die Standardeingabe ist zu groß für eine WireGuard-Konfiguration.")
+        return [("stdin", data)]
     try:
         if zipfile.is_zipfile(path):
             out = []
@@ -117,8 +128,27 @@ def confs_from(path: Path) -> list[tuple[str, bytes]]:
         raise CliError(f"{path} lässt sich nicht lesen: {e.strerror}") from None
 
 
-def cmd_list(_args) -> None:
+_emitted = False
+
+
+def emit(data: dict) -> None:
+    """JSON für Programme: genau ein Objekt je Aufruf, immer mit Schema-Version (docs/cli.md)."""
+    global _emitted
+    _emitted = True
+    print(json.dumps({"schema": SCHEMA, "version": __version__, **data}, ensure_ascii=False, indent=2))
+
+
+def cmd_version(args) -> None:
+    if args.json:
+        emit({"helper": helper_path() if Path(helper_path()).exists() else None})
+    else:
+        print(f"bonys-vpn {__version__}")
+
+
+def cmd_list(args) -> None:
     data = call_json(["list"])
+    if args.json:
+        return emit(data)
     if not data["tunnels"]:
         print("Noch keine Tunnel. Importieren mit: bonys-vpn import DATEI.conf")
         return
@@ -158,37 +188,45 @@ def print_status(data: dict) -> None:
 def cmd_status(args) -> None:
     data = call_json(["status"] + ([args.name] if args.name else []))
     if args.json:
-        print(json.dumps(data, ensure_ascii=False, indent=2))
+        emit(data)
     else:
         print_status(data)
 
 
 def cmd_up(args) -> None:
     call(["up", args.name])
+    if args.json:
+        return emit({"ok": True})
     print(f"„{args.name}“ ist verbunden.")
 
 
 def cmd_down(args) -> None:
     call(["down"] + ([args.name] if args.name else []))
+    if args.json:
+        return emit({"ok": True})
     print(f"„{args.name}“ ist getrennt." if args.name else "Alle Tunnel sind getrennt.")
 
 
 def cmd_import(args) -> None:
     items: list[tuple[str, bytes]] = []
     for f in args.files:
-        items += confs_from(Path(f).expanduser())
+        items += confs_from(Path(f).expanduser() if f != "-" else Path("-"))
     if args.name and len(items) != 1:
         raise CliError("--name geht nur beim Import einer einzelnen Konfiguration.")
+    if "-" in args.files and not args.name:
+        raise CliError("Beim Lesen von der Standardeingabe bitte --name angeben.")
     if args.allow_hooks:
         print("Achtung: Hook-Zeilen (PreUp/PostUp/PreDown/PostDown) laufen beim Verbinden als root. "
               "Nur importieren, wenn du der Datei vertraust.", file=sys.stderr)
     failed = 0
+    results = []
     for name, data in items:
         name = args.name or name
         try:
             wgconf.check_name(name)
         except wgconf.ConfError as e:
             print(f"{name}: {e} Mit --name einen anderen Namen wählen.", file=sys.stderr)
+            results.append({"name": name, "ok": False, "error": str(e)})
             failed += 1
             continue
         extra = (["--allow-hooks"] if args.allow_hooks else []) + (["--replace"] if args.replace else [])
@@ -196,11 +234,19 @@ def cmd_import(args) -> None:
             call(["import", name, *extra], data)
         except CliError as e:
             print(f"{name}: {e}", file=sys.stderr)
+            results.append({"name": name, "ok": False, "error": str(e)})
             failed += 1
             continue
-        print(f"„{name}“ importiert.")
+        results.append({"name": name, "ok": True})
+        if not args.json:
+            print(f"„{name}“ importiert.")
     if failed:
-        raise CliError(f"{failed} von {len(items)} Konfiguration(en) nicht importiert.")
+        msg = f"{failed} von {len(items)} Konfiguration(en) nicht importiert."
+        if args.json:
+            emit({"imported": results, "error": msg})
+        raise CliError(msg)
+    if args.json:
+        emit({"imported": results})
 
 
 def cmd_delete(args) -> None:
@@ -211,11 +257,15 @@ def cmd_delete(args) -> None:
             print("Abgebrochen.")
             return
     call(["delete", args.name])
+    if args.json:
+        return emit({"ok": True})
     print(f"„{args.name}“ gelöscht.")
 
 
 def cmd_rename(args) -> None:
     call(["rename", args.old, args.new])
+    if args.json:
+        return emit({"ok": True})
     print(f"„{args.old}“ heißt jetzt „{args.new}“.")
 
 
@@ -233,43 +283,54 @@ def cmd_export(args) -> None:
 def cmd_autostart(args) -> None:
     on = args.state in ("on", "an")
     call(["autostart", args.name, "on" if on else "off"])
+    if args.json:
+        return emit({"ok": True})
     print(f"„{args.name}“ verbindet sich {'jetzt' if on else 'nicht mehr'} automatisch beim Start.")
 
 
 def cmd_killswitch(args) -> None:
     state = {"an": "on", "aus": "off"}.get(args.state, args.state)
     extra = [x for net in (args.exception or []) for x in ("--exception", net)]
+    extra += ["--no-exceptions"] if args.no_exceptions else []
     data = call_json(["killswitch", state, *extra])
+    if args.json:
+        return emit({k: v for k, v in data.items() if k not in ("schema", "version")})
     text = "an" if data["enabled"] else "aus"
     print(f"Kill-Switch: {text}" + (f" – Ausnahmen: {', '.join(data['exceptions'])}" if data["exceptions"] else ""))
 
 
 def parser() -> argparse.ArgumentParser:
     p = argparse.ArgumentParser(prog="bonys-vpn", description="Bony's VPN – WireGuard-Tunnel verwalten.")
+    p.add_argument("--version", action="version", version=f"bonys-vpn {__version__}")
     sub = p.add_subparsers(dest="cmd", required=True, metavar="BEFEHL")
-    sub.add_parser("list", help="Tunnel auflisten").set_defaults(func=cmd_list)
-    st = sub.add_parser("status", help="Status, Handshake, Datenmenge, Kill-Switch")
+
+    def json_flag(sp):
+        sp.add_argument("--json", action="store_true", help="maschinenlesbar (docs/cli.md)")
+        return sp
+
+    json_flag(sub.add_parser("version", help="Version und Schema der Schnittstelle")).set_defaults(func=cmd_version)
+    json_flag(sub.add_parser("list", help="Tunnel auflisten")).set_defaults(func=cmd_list)
+    st = json_flag(sub.add_parser("status", help="Status, Handshake, Datenmenge, Kill-Switch"))
     st.add_argument("name", nargs="?")
-    st.add_argument("--json", action="store_true", help="maschinenlesbar")
     st.set_defaults(func=cmd_status)
-    up = sub.add_parser("up", help="Tunnel verbinden (trennt einen anderen)")
+    up = json_flag(sub.add_parser("up", help="Tunnel verbinden (trennt einen anderen)"))
     up.add_argument("name")
     up.set_defaults(func=cmd_up)
-    down = sub.add_parser("down", help="Tunnel trennen (ohne Namen: alle)")
+    down = json_flag(sub.add_parser("down", help="Tunnel trennen (ohne Namen: alle)"))
     down.add_argument("name", nargs="?")
     down.set_defaults(func=cmd_down)
-    imp = sub.add_parser("import", help="Konfiguration(en) importieren (.conf oder .zip)")
+    imp = json_flag(sub.add_parser("import", help="Konfiguration(en) importieren (.conf, .zip oder - für stdin)"))
     imp.add_argument("files", nargs="+", metavar="DATEI")
     imp.add_argument("--name", help="Name des Tunnels (sonst der Dateiname)")
     imp.add_argument("--hooks-erlauben", dest="allow_hooks", action="store_true",
                      help="PreUp/PostUp/PreDown/PostDown zulassen (laufen als root!)")
     imp.add_argument("--ersetzen", dest="replace", action="store_true", help="vorhandenen Tunnel ersetzen")
     imp.set_defaults(func=cmd_import)
-    de = sub.add_parser("delete", help="Tunnel löschen")
+    de = json_flag(sub.add_parser("delete", help="Tunnel löschen"))
     de.add_argument("name")
     de.add_argument("--ja", dest="yes", action="store_true", help="ohne Rückfrage")
     de.set_defaults(func=cmd_delete)
-    ren = sub.add_parser("rename", help="Tunnel umbenennen")
+    ren = json_flag(sub.add_parser("rename", help="Tunnel umbenennen"))
     ren.add_argument("old", metavar="ALT")
     ren.add_argument("new", metavar="NEU")
     ren.set_defaults(func=cmd_rename)
@@ -277,24 +338,29 @@ def parser() -> argparse.ArgumentParser:
     ex.add_argument("name")
     ex.add_argument("file", nargs="?", metavar="DATEI")
     ex.set_defaults(func=cmd_export)
-    au = sub.add_parser("autostart", help="beim Start automatisch verbinden")
+    au = json_flag(sub.add_parser("autostart", help="beim Start automatisch verbinden"))
     au.add_argument("name")
     au.add_argument("state", choices=["on", "off", "an", "aus"])
     au.set_defaults(func=cmd_autostart)
-    ks = sub.add_parser("killswitch", help="Kill-Switch: ohne Tunnel kein Internet")
+    ks = json_flag(sub.add_parser("killswitch", help="Kill-Switch: ohne Tunnel kein Internet"))
     ks.add_argument("state", choices=["on", "off", "status", "an", "aus"])
     ks.add_argument("--ausnahme", dest="exception", action="append", metavar="NETZ",
                     help="Netz, das immer erreichbar bleibt (z. B. 192.168.178.0/24); ersetzt die Liste")
+    ks.add_argument("--keine-ausnahmen", dest="no_exceptions", action="store_true", help="Ausnahmeliste leeren")
     ks.set_defaults(func=cmd_killswitch)
     return p
 
 
 def main(argv: list[str] | None = None) -> int:
+    global _emitted
+    _emitted = False
     args = parser().parse_args(argv)
     try:
         args.func(args)
     except CliError as e:
         print(f"Fehler: {e}", file=sys.stderr)
+        if getattr(args, "json", False) and not _emitted:
+            emit({"error": str(e)})
         return 1
     except KeyboardInterrupt:
         return 130

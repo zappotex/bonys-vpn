@@ -1,0 +1,94 @@
+name: Release
+
+# Ein Tag wie „v1.0.0“ prüft und baut alles (CI-Workflow) und veröffentlicht:
+#   - bonys-vpn_<version>_all.deb           (amd64 und arm64: reiner Python-Code)
+#   - bonys-vpn-agentpc_<version>_all.deb   (nur für Agent-PCs von Bony's Agents)
+#   - SHA256SUMS + SHA256SUMS.minisig       (signiert mit demselben minisign-Schlüssel wie Bony's Agents)
+# Die APT-Paketquelle liegt bei Bony's Agents (GitHub Pages, gemeinsam für beide Projekte). Sie holt neue
+# Releases von selbst (stündlich). Mit dem optionalen Secret APT_DISPATCH_TOKEN wird sie sofort neu gebaut.
+#
+# Secrets (Settings → Secrets and variables → Actions):
+#   MINISIGN_SECRET_KEY   derselbe Schlüssel wie bei Bony's Agents (Datei aus „minisign -G -W“)
+#   APT_DISPATCH_TOKEN    optional: Fine-grained Token mit „Actions: Read and write“ für zappotex/BonysAgents
+
+on:
+  push:
+    tags: ["v*"]
+  workflow_dispatch:
+
+permissions:
+  contents: write
+
+jobs:
+  ci:
+    uses: ./.github/workflows/ci.yml
+
+  release:
+    if: startsWith(github.ref, 'refs/tags/v')
+    needs: ci
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/download-artifact@v4
+        with:
+          name: deb
+          path: out
+      - name: Tag und Version passen zusammen
+        run: |
+          v="$(sed -n 's/^__version__ = "\(.*\)"/\1/p' src/bonys_vpn/__init__.py)"
+          [ "v$v" = "$GITHUB_REF_NAME" ] || { echo "::error::Tag $GITHUB_REF_NAME, aber __version__ = $v"; exit 1; }
+          grep -q "^## $v" CHANGELOG.md || { echo "::error::CHANGELOG.md hat keinen Abschnitt $v"; exit 1; }
+          ls out/bonys-vpn_${v}_all.deb out/bonys-vpn-agentpc_${v}_all.deb
+      - name: Prüfsummen (SHA256SUMS) erzeugen und signieren
+        env:
+          MINISIGN_SECRET_KEY: ${{ secrets.MINISIGN_SECRET_KEY }}
+        run: |
+          cd out
+          sha256sum -- *.deb > SHA256SUMS
+          cat SHA256SUMS
+          if [ -z "$MINISIGN_SECRET_KEY" ]; then
+            echo "::error::Secret MINISIGN_SECRET_KEY fehlt – ohne Signatur installiert Bony's VPN keine Updates."
+            exit 1
+          fi
+          sudo apt-get install -y -qq minisign > /dev/null
+          KEY="$RUNNER_TEMP/minisign.key"
+          (umask 077; printf '%s\n' "$MINISIGN_SECRET_KEY" > "$KEY")
+          # Bony's VPN prüft, dass der vertrauenswürdige Kommentar genau diese Version nennt.
+          minisign -S -s "$KEY" -m SHA256SUMS -t "Bony's VPN ${GITHUB_REF_NAME}"
+          rm -f "$KEY"
+          PUB="$(sed -n 's/^UPDATE_PUBLIC_KEY = "\(.*\)"/\1/p' ../src/bonys_vpn/__init__.py)"
+          minisign -V -m SHA256SUMS -P "$PUB"
+      - name: Abschnitt aus CHANGELOG.md
+        run: |
+          v="${GITHUB_REF_NAME#v}"
+          awk -v v="$v" '$0 ~ "^## "v {f=1; next} /^## / {f=0} f' CHANGELOG.md > notes.md
+          cat >> notes.md <<'NOTES'
+
+          **Installieren** (Debian 12/13, Ubuntu 22.04+, Linux Mint 21+, amd64 und arm64):
+          `bonys-vpn_…_all.deb` herunterladen und doppelklicken (öffnet die Softwareverwaltung) → „Installieren“.
+          Oder im Terminal: `sudo apt install ./bonys-vpn_…_all.deb`. Das Paket richtet die Paketquelle ein –
+          Updates kommen danach über die Aktualisierungsverwaltung.
+
+          `bonys-vpn-agentpc` ist **nur** für die Agent-PCs von Bony's Agents (Bony's Agents installiert es dort selbst).
+          Auf dem eigenen Rechner nicht installieren.
+
+          Prüfsummen: `SHA256SUMS`, signiert mit minisign (`SHA256SUMS.minisig`, derselbe Schlüssel wie bei Bony's Agents).
+          NOTES
+          cat notes.md
+      - uses: softprops/action-gh-release@v2
+        with:
+          name: Bony's VPN ${{ github.ref_name }}
+          body_path: notes.md
+          files: |
+            out/*.deb
+            out/SHA256SUMS
+            out/SHA256SUMS.minisig
+      - name: APT-Paketquelle bei Bony's Agents neu bauen lassen
+        env:
+          GH_TOKEN: ${{ secrets.APT_DISPATCH_TOKEN }}
+        run: |
+          if [ -n "$GH_TOKEN" ]; then
+            gh workflow run apt-repo.yml -R zappotex/BonysAgents
+          else
+            echo "::notice::Die APT-Paketquelle holt das Release innerhalb einer Stunde von selbst."
+          fi
