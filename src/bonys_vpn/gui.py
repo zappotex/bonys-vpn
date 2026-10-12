@@ -85,6 +85,8 @@ CSS = """
 .bvpn-window button.bvpn-danger label { color: #0d141d; }
 .bvpn-drop { border: 2px dashed #3fa9f5; border-radius: 10px; padding: 24px; }
 .bvpn-mono { font-family: monospace; }
+/* Dialoge: manche Themes (Mint-Y) färben Texte in Dialogen grau – hier fest die helle Schrift */
+.bvpn-window label.bvpn-text { color: #e8eef5; }
 """
 
 
@@ -1227,11 +1229,12 @@ class AgentsDialog(Gtk.Dialog):
         box = self.get_content_area()
         box.set_spacing(10)
         box.set_border_width(16)
-        box.pack_start(label(tr("Bony's Agents – virtuelle Agent-PCs"), "bvpn-name", wrap=True), False, False, 0)
+        box.pack_start(label(tr("Bony's Agents – virtuelle Agent-PCs"), "bvpn-name", "bvpn-text", wrap=True),
+                       False, False, 0)
         box.pack_start(label(tr(
             "Bony's Agents erstellt per Mausklick eigene virtuelle Rechner (Debian mit Desktop), in denen "
             "KI-Agenten, Browser und Messenger fertig eingerichtet sind – sauber getrennt von deinem "
-            "eigentlichen System. Bony's VPN ist dort schon dabei."), wrap=True), False, False, 0)
+            "eigentlichen System. Bony's VPN ist dort schon dabei."), "bvpn-text", wrap=True), False, False, 0)
         yt = Gtk.LinkButton.new_with_label(YOUTUBE_CHANNEL_URL, tr("Videos auf YouTube: @BonysAgents"))
         yt.set_halign(Gtk.Align.START)
         box.pack_start(yt, False, False, 0)
