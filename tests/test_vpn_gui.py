@@ -444,8 +444,19 @@ def finish():
     app.quit()
     return False
 
-GLib.timeout_add(800, step1)
-GLib.timeout_add(15000, lambda: (print("SMOKE-TIMEOUT"), app.quit()))
+START = time.time()
+
+def ready():
+    # erst loslegen, wenn das Fenster den Status zeigt (erster GTK-Start kann dauern: Schrift-Cache)
+    w = app.window
+    if (w is None or not app.status.tunnels) and time.time() - START < 20:
+        GLib.timeout_add(200, ready)
+        return False
+    GLib.timeout_add(300, step1)
+    return False
+
+GLib.timeout_add(200, ready)
+GLib.timeout_add(40000, lambda: (print("SMOKE-TIMEOUT"), app.quit()))
 app.run(["bonys-vpn-gui"])
 """
 
@@ -494,7 +505,7 @@ def test_gui_smoke_offscreen(broadway, lang, tmp_path):
 
 
 SMOKE_HOST = r"""
-import json, sys
+import json, sys, time
 sys.path.insert(0, sys.argv[1])
 import gi
 gi.require_version("Gtk", "3.0")
@@ -592,8 +603,19 @@ def step3(t2):
     app.quit()
     return False
 
-GLib.timeout_add(800, step1)
-GLib.timeout_add(15000, lambda: (print("SMOKE-TIMEOUT"), app.quit()))
+START = time.time()
+
+def ready():
+    # erst loslegen, wenn das Fenster den Status zeigt (erster GTK-Start kann dauern: Schrift-Cache)
+    w = app.window
+    if (w is None or not app.status.tunnels) and time.time() - START < 20:
+        GLib.timeout_add(200, ready)
+        return False
+    GLib.timeout_add(300, step1)
+    return False
+
+GLib.timeout_add(200, ready)
+GLib.timeout_add(40000, lambda: (print("SMOKE-TIMEOUT"), app.quit()))
 app.run(["bonys-vpn-gui"])
 """
 
