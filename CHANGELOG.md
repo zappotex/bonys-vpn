@@ -3,6 +3,21 @@
 Alle Versionen von Bony's VPN. Bis zur Version 0.14 von [Bony's Agents](https://github.com/zappotex/BonysAgents)
 war Bony's VPN ein Teil davon. Die Entstehung steht im Verlauf dieses Repositorys.
 
+## Unveröffentlicht
+
+- Gemeinsamer Baustein `bony_netz` 0.1.1 (gleich wie in Bony's Agents; Korrektur im Beitrittsskript für Agent-PCs,
+  betrifft Bony's VPN selbst nicht).
+- **Bereich „Bony-Netz“** neben den WireGuard-Tunneln (oben im Fenster umschalten, nicht im Agent-PC): Server
+  wählen und prüfen, Instanz anlegen oder löschen, Kursleiter-Code einlösen, Liste der Geräte der Instanz mit
+  Netzadresse, online/offline und „zuletzt gesehen“ (alle 30 Sekunden, solange der Bereich sichtbar ist),
+  „Entfernen …“ mit Rückfrage. Gemeinsamer Baustein `bony_netz` 0.1.0 und gemeinsame Anmeldung (`konto.json`) mit
+  Bony's Agents: Eine dort angelegte Instanz erscheint ohne erneutes Anlegen.
+- **„Diesen Rechner verbinden“:** bringt den Rechner mit Tailscale ins Netz der Instanz; fehlt Tailscale,
+  Installation aus der offiziellen Paketquelle. Rückfrage, bevor ein anderes Tailscale-Konto ersetzt wird
+  (es bleibt als Profil erhalten). Zustand immer aus `tailscale status --json`.
+- **Helfer:** neue Befehle `netz start|up|down|join` – der Geräteschlüssel kommt nur über die Standardeingabe.
+- Hinweis im Bereich, wenn der Kill-Switch das Bony-Netz sperrt (Ausnahme `100.64.0.0/10`).
+
 ## 1.0.1
 
 - **Symbol in der Leiste bei jedem Start:** Wird Bony's VPN aus dem Startmenü geöffnet, bleibt es nach dem Schließen

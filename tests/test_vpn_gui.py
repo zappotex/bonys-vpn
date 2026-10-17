@@ -91,16 +91,23 @@ def test_every_translation_has_the_same_placeholders():
 
 
 def test_all_texts_of_the_gui_are_translated():
-    """Jeder tr("…")-Text in gui.py und model.py hat eine englische Fassung."""
+    """Jeder tr("…")-Text in gui.py, model.py, netz.py und netz_gui.py hat eine englische Fassung."""
     import ast
 
-    for name in ("gui.py", "model.py"):
+    from bonys_vpn import netz  # noqa: F401 – trägt seine Übersetzungen in model.EN ein
+
+    en = dict(model.EN)
+    tree = ast.parse((ROOT / "src/bonys_vpn/netz_gui.py").read_text())   # ohne GTK: EN-Tabelle direkt lesen
+    for node in ast.walk(tree):
+        if isinstance(node, ast.Assign) and getattr(node.targets[0], "id", "") == "EN":
+            en.update(ast.literal_eval(node.value))
+    for name in ("gui.py", "model.py", "netz.py", "netz_gui.py"):
         tree = ast.parse((ROOT / "src/bonys_vpn" / name).read_text())
         for node in ast.walk(tree):
             if isinstance(node, ast.Call) and getattr(node.func, "id", "") == "tr" and node.args:
                 arg = node.args[0]
                 if isinstance(arg, ast.Constant):
-                    assert arg.value in model.EN, f"{name}: {arg.value!r} fehlt in model.EN"
+                    assert arg.value in en, f"{name}: {arg.value!r} fehlt in model.EN"
 
 
 def test_format_bytes():
@@ -373,6 +380,7 @@ def step1():
     check(w is not None and w.get_visible(), "Fenster nicht sichtbar")
     w.resize(800, 600)
     check(w.stack.get_visible_child_name() == "main", "Tunnelliste fehlt")
+    check(w.netz is None and w.areas.get_child_by_name("netz") is None, "Agent-PC zeigt den Bereich Bony-Netz")
     check(len(w.listbox.get_children()) == 2, "zwei Tunnel erwartet")
     check(w.d_name.get_text() == "fritz", "aktiver Tunnel nicht ausgewählt")
     check(w.connect_btn.get_label() == model.tr("Trennen"), "Knopf sollte Trennen heißen")
@@ -638,3 +646,159 @@ def test_gui_smoke_host(broadway, tmp_path):
     proc = subprocess.run([py, "-c", SMOKE_HOST, str(ROOT / "src"), json.dumps(status)],
                           capture_output=True, text=True, env=env, timeout=60)
     assert "SMOKE-OK" in proc.stdout, proc.stdout + proc.stderr
+
+
+SMOKE_NETZ = r"""
+import sys, time
+sys.path.insert(0, sys.argv[1])
+import gi
+gi.require_version("Gtk", "3.0")
+from gi.repository import GLib, Gtk
+from bony_netz import Konto
+from bonys_vpn import gui, host, model, netz
+
+calls = []
+
+class Fake:
+    def status(self):
+        return {"tunnels": [], "killswitch": {"enabled": True, "active": True, "exceptions": []}}
+    def run(self, *args, data=None):
+        calls.append((args, data))
+        return ""
+
+model.set_language("de")
+host.agents_command = lambda home=None: None
+errors = []
+state = {"ts": netz.Tailscale(False), "zustand": 0, "fremd": True}
+netz.tailscale_status = lambda *a, **k: state["ts"]
+
+def zustand():
+    state["zustand"] += 1
+    return netz.Zustand("Verbunden mit Test-Zentrale", Konto.laden(), {"server_name": "Test-Zentrale",
+                        "version": "1.0"}, verbunden=True)
+
+netz.zustand = zustand
+netz.geraete = lambda: [{"geraet_id": "1", "name": "agent-pc-1", "ip": "100.64.0.7", "online": True},
+                        {"geraet_id": "2", "name": "rechner-test", "ip": "100.64.0.5", "online": False,
+                         "zuletzt_gesehen": 1760000000}]
+removed = []
+netz.geraet_entfernen = lambda gid: removed.append(gid)
+verbinden = []
+
+def fake_verbinden(helfer, ersetzen=False, **kw):
+    verbinden.append(ersetzen)
+    if state["fremd"] and not ersetzen:
+        raise netz.Rueckfrage("firma.ts.net")
+    helfer("netz", "join", "--login-server", "https://vpn.test", "--hostname", "rechner-test", data=b"geheim")
+    state["ts"] = netz.Tailscale(True, True, "Running", "rechner-test", ["100.64.0.5"], "vpn.test")
+
+netz.verbinden = fake_verbinden
+asked = []
+
+def check(cond, what):
+    if not cond:
+        errors.append(what)
+
+app = gui.App(client=Fake(), sys_net=gui.Path("/nonexistent"), unique=False, agentpc=False, auto_status=False,
+              update_check=False)
+
+def step1():
+    w = app.window
+    b = w.netz
+    check(b is not None, "Bereich Bony-Netz fehlt")
+    check(state["zustand"] == 0, "Zentrale gefragt, obwohl der Bereich nicht sichtbar ist")
+    w.areas.set_visible_child_name("netz")
+    GLib.timeout_add(500, step2)
+    return False
+
+def step2():
+    w, b = app.window, app.window.netz
+    check(not w.import_btn.get_visible(), "Importieren im Bereich Bony-Netz sichtbar")
+    check(state["zustand"] == 0, "ohne Instanz die Zentrale gefragt")
+    check(b.install_btn.get_visible(), "Knopf Tailscale installieren fehlt")
+    check(not b.switch.get_sensitive(), "Schalter ohne Instanz bedienbar")
+    check(b.create_btn.get_visible() and not b.delete_btn.get_visible(), "Instanz-Knöpfe falsch")
+    check(b.agents_row.get_visible(), "Hinweis auf Bony's Agents fehlt")
+    check(b.ks_hint.get_visible() and "100.64.0.0/10" in b.ks_hint.get_text(), "Kill-Switch-Hinweis fehlt")
+    # Instanz aus Bony's Agents erscheint ohne erneutes Anlegen
+    k = Konto(server=b.konto.server)
+    k.uebernehmen({"instanz_id": "inst0001abcdefgh", "token": "bz_geheim", "login_server": "https://vpn.test"})
+    k.speichern()
+    b.konto = Konto.laden()
+    state["ts"] = netz.Tailscale(True, True, "Running", "laptop", ["100.101.1.2"], "firma.ts.net")
+    b.refresh()
+    GLib.timeout_add(600, step3)
+    return False
+
+def step3():
+    b = app.window.netz
+    check(state["zustand"] >= 1, "Zentrale mit Instanz nicht gefragt")
+    check("inst0001" in b.instance.get_text() and b.delete_btn.get_visible(), f"Instanz: {b.instance.get_text()}")
+    check(b.code_row.get_visible(), "Kursleiter-Code fehlt")
+    rows = b.devices.get_children()
+    check(len(rows) == 2, f"Geräte: {len(rows)}")
+    check(not b.switch.get_active() and b.switch.get_sensitive(), "Schalter bei fremdem Konto an oder gesperrt")
+    check("anderen Tailscale-Konto" in b.ts_state.get_text(), f"Zustand: {b.ts_state.get_text()}")
+    # Einschalten: erst Rückfrage (abgelehnt), dann ersetzen
+    b._confirm = lambda *a, **k: asked.append(a[0]) or False
+    b.switch.set_active(True)
+    GLib.timeout_add(600, step4)
+    return False
+
+def step4():
+    b = app.window.netz
+    check(verbinden == [False] and asked == ["Anderes Tailscale-Konto ersetzen?"], f"Rückfrage: {verbinden} {asked}")
+    joined = [c for c in calls if c[0][:2] == ("netz", "join")]
+    check(not b.switch.get_active() and not joined, "ohne Zustimmung verbunden")
+    b._confirm = lambda *a, **k: True
+    b.switch.set_active(True)
+    GLib.timeout_add(900, step5)
+    return False
+
+def step5():
+    b = app.window.netz
+    check(verbinden[-1] is True, f"nicht ersetzt: {verbinden}")
+    check(b.switch.get_active(), "Schalter nach dem Verbinden aus")
+    check("Verbunden als rechner-test" in b.ts_state.get_text(), f"Zustand: {b.ts_state.get_text()}")
+    titles = [r.get_child().get_children()[0].get_children()[0].get_text() for r in b.devices.get_children()]
+    check("rechner-test (dieser Rechner)" in titles, f"Geräte: {titles}")
+    b.switch.set_active(False)
+    b._remove(b.devices.get_children()[0].geraet)
+    GLib.timeout_add(600, step6)
+    return False
+
+def step6():
+    check([c[0] for c in calls if c[0][:2] == ("netz", "down")] == [("netz", "down")], f"Trennen: {calls}")
+    check(removed == ["1"], f"Entfernen: {removed}")
+    app.window.areas.set_visible_child_name("tunnel")
+    check(app.window.import_btn.get_visible(), "Importieren fehlt wieder")
+    print("SMOKE-OK" if not errors else "SMOKE-FEHLER: " + "; ".join(errors))
+    app.quit()
+    return False
+
+START = time.time()
+
+def ready():
+    if app.window is None and time.time() - START < 20:
+        GLib.timeout_add(200, ready)
+        return False
+    GLib.timeout_add(300, step1)
+    return False
+
+GLib.timeout_add(200, ready)
+GLib.timeout_add(40000, lambda: (print("SMOKE-TIMEOUT"), app.quit()))
+app.run(["bonys-vpn-gui"])
+"""
+
+
+def test_gui_smoke_bony_netz(broadway, tmp_path):
+    """Bereich „Bony-Netz“: ohne Instanz keine Abfrage, Instanz aus Bony's Agents, Geräte, Rückfrage vor dem
+    Ersetzen eines anderen Tailscale-Kontos, Trennen, Entfernen."""
+    py, display, runtime = broadway
+    env = dict(os.environ, GDK_BACKEND="broadway", BROADWAY_DISPLAY=display, NO_AT_BRIDGE="1",
+               XDG_RUNTIME_DIR=str(runtime), XDG_CONFIG_HOME=str(tmp_path), BONY_NETZ_ORDNER=str(tmp_path / "bn"))
+    env.pop("DBUS_SESSION_BUS_ADDRESS", None)
+    proc = subprocess.run([py, "-c", SMOKE_NETZ, str(ROOT / "src")], capture_output=True, text=True, env=env,
+                          timeout=60)
+    assert "SMOKE-OK" in proc.stdout, proc.stdout + proc.stderr
+    assert "bz_geheim" not in proc.stdout + proc.stderr

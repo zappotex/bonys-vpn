@@ -17,6 +17,8 @@ Internet kommt – auch nicht, wenn der Tunnel abbricht oder nach einem Neustart
 - **Automatisch verbinden** beim Hochfahren
 - **Kill-Switch** (nftables): ohne Tunnel kein Internet. Ausnahmen für dein Heimnetz (Drucker, NAS) möglich
 - **Symbol in der Leiste** mit Schnellwahl und **Meldung bei Abbruch**
+- **Bony-Netz:** deine Agent-PCs aus Bony's Agents übers Internet erreichen, Geräte verwalten, diesen Rechner mit
+  einem Schalter ins Netz bringen ([unten](#bony-netz))
 - **Kommandozeile** `bonys-vpn` mit JSON-Ausgabe ([docs/cli.md](docs/cli.md))
 - **Updates** über die Aktualisierungsverwaltung, sonst geprüft aus dem GitHub-Release
 - Deutsch und Englisch
@@ -80,6 +82,30 @@ Hast du einen WireGuard-Tunnel schon über die Netzwerkeinstellungen eingerichte
 Trennen kann ihn aber nur der NetworkManager (Netzwerk-Symbol in der Leiste). Zwei Tunnel für den ganzen
 Rechner stören sich, deshalb bittet Bony's VPN vor dem Verbinden darum, den anderen zu trennen.
 
+## Bony-Netz
+
+Neben den WireGuard-Tunneln hat das Fenster einen zweiten Bereich **„Bony-Netz“** (oben rechts umschalten). Über
+das Bony-Netz verbinden sich die Agent-PCs aus [Bony's Agents](https://github.com/zappotex/BonysAgents) übers
+Internet – und auf Wunsch auch dieser Rechner.
+
+- **Server und Instanz:** Standard ist `https://zentrale.bony23.de`, ein eigener Server geht auch („Prüfen“). Die
+  Instanz ist deine Anmeldung beim Server. Bony's Agents und Bony's VPN teilen sich diese Anmeldung
+  (`~/.config/bonys-netz/konto.json`): Eine in Bony's Agents angelegte Instanz erscheint hier sofort.
+- **Agenten-PCs:** alle Geräte deiner Instanz mit Netzadresse, online/offline und „zuletzt gesehen“, aktualisiert
+  alle 30 Sekunden, solange der Bereich offen ist. „Entfernen …“ nimmt ein Gerät nach Rückfrage aus dem Netz.
+- **Kursleiter-Code einlösen** schaltet die Instanz für Kurse frei.
+- **Diesen Rechner verbinden:** bringt deinen Rechner mit [Tailscale](https://tailscale.com) ins Netz deiner
+  Instanz – danach erreichst du deine Agent-PCs unter ihrer Netzadresse (z. B. `ping 100.64.0.7`). Fehlt
+  Tailscale, bietet Bony's VPN die Installation aus der offiziellen Paketquelle `pkgs.tailscale.com` an.
+  Ausschalten trennt nur (`tailscale down`), beim Wiedereinschalten braucht es keinen neuen Schlüssel.
+  Ist auf dem Rechner schon ein **anderes Tailscale-Konto** angemeldet, fragt Bony's VPN vorher: Es wird beim
+  Verbinden ersetzt, bleibt aber als Profil erhalten (`tailscale switch`).
+
+Ohne Instanz nimmt Bony's VPN keinen Kontakt zum Server auf, ohne Internet funktionieren die Tunnel wie immer.
+Ist der **Kill-Switch** an, ist auch das Bony-Netz ohne verbundenen Tunnel gesperrt; mit verbundenem Tunnel geht
+es, wenn `100.64.0.0/10` unter **Menü → Kill-Switch-Ausnahmen …** steht (darauf weist der Bereich hin). Im
+Agent-PC gibt es den Bereich nicht – den verbindet Bony's Agents selbst.
+
 ## Kommandozeile
 
 ```text
@@ -114,7 +140,9 @@ nach Rückfrage aus der offiziellen Quelle (Paketquelle oder geprüftes Release)
 - Schlüssel liegen nur in `/etc/wireguard` (nur für root lesbar) und erscheinen in keiner Anzeige, keinem
   Protokoll und keiner JSON-Ausgabe.
 - Updates und Bony's Agents werden nur aus dem offiziellen Release installiert, nach Prüfung der
-  minisign-Signatur und der SHA-256-Prüfsumme.
+  minisign-Signatur und der SHA-256-Prüfsumme. Tailscale nur aus der offiziellen Paketquelle von Tailscale.
+- Bony-Netz: Das Instanz-Token liegt nur in `konto.json` (Rechte 600) und erscheint nirgends. Der einmal nutzbare
+  Geräteschlüssel geht nur über die Standardeingabe an den Helfer, nie über die Befehlszeile.
 
 Alles im Detail: [docs/sicherheit.md](docs/sicherheit.md).
 

@@ -56,6 +56,8 @@ test ! -e /etc/systemd/system/bonys-vpn-killswitch.service && test ! -e /etc/xdg
 test "$(sha256sum /etc/wireguard/alt.conf /etc/bonys-vpn/killswitch.json)" = "$SUM_BEFORE"
 test -e /etc/polkit-1/rules.d/50-bonys-vpn.rules
 test ! -e /usr/share/bonys-vpn/agentpc
+# Baustein des Bony-Netzes liegt neben bonys_vpn und lässt sich mit dem System-Python laden
+python3 -IB -c 'import sys; sys.path.insert(0, "/usr/lib/bonys-vpn"); import bony_netz, bonys_vpn.netz; print("bony_netz", bony_netz.__version__)'
 # Kein Bytecode-Cache im Paketordner (dpkg würde ihn beim Entfernen liegen lassen)
 test -z "$(find /usr/lib/bonys-vpn -name __pycache__)"
 

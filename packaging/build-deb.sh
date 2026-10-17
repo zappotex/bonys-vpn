@@ -74,7 +74,8 @@ Description: WireGuard-VPN mit Kill-Switch – einfach per Mausklick
  und ZIP), mit einem Klick verbinden und trennen, Live-Werte, Kill-Switch
  (ohne Tunnel kein Internet, auch nach einem Neustart), Autostart und
  Symbol in der Leiste. Root-Rechte bekommt nur ein kleiner Helfer über
- polkit. Auch die Kommandozeile bonys-vpn ist dabei.
+ polkit. Auch die Kommandozeile bonys-vpn ist dabei. Dazu der Bereich
+ „Bony-Netz“: Agent-PCs von Bony's Agents übers Internet erreichen.
 EOF
 
 cat > "$STAGE/DEBIAN/postinst" <<'EOF'

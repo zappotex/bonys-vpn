@@ -40,7 +40,8 @@ bonys-vpn = "bonys_vpn.cli:main"
 path = "src/bonys_vpn/__init__.py"
 
 [tool.hatch.build.targets.wheel]
-packages = ["src/bonys_vpn"]
+# bony_netz: gemeinsamer Baustein mit Bony's Agents (unverändert aus bony-netz-paket übernommen)
+packages = ["src/bonys_vpn", "src/bony_netz"]
 
 [tool.pytest.ini_options]
 testpaths = ["tests"]
@@ -52,3 +53,7 @@ target-version = "py310"
 [tool.ruff.lint]
 select = ["E", "F", "W", "B", "UP"]
 ignore = ["B008"]
+
+[tool.ruff.lint.per-file-ignores]
+# Baustein bleibt unverändert wie im Paket (gleiche Ausnahmen wie in Bony's Agents)
+"src/bony_netz/*" = ["E501", "UP037"]

@@ -18,6 +18,7 @@ Projekt mit eigenen Paketen. Bony's Agents nutzt es nur noch über die Kommandoz
 |---|---|---|
 | `bonys-vpn` (`cli.py`) | Benutzer | Kommandozeile, offizielle Schnittstelle (`docs/cli.md`). Liest .conf-Dateien mit den Rechten des Benutzers |
 | `bonys-vpn-gui` (`gui.py`, `model.py`, `host.py`) | Benutzer | Oberfläche (GTK 3), Tray-Symbol |
+| `netz.py`, `netz_gui.py`, Baustein `bony_netz` | Benutzer | Bereich „Bony-Netz“: Zentrale, Instanz, Geräte, Tailscale-Zustand |
 | `bonys-vpn-helper` (`helper.py`) | root, über `pkexec` | Die wenigen Aktionen, für die root nötig ist |
 | `conf.py` | – | Prüft .conf-Dateien und Tunnelnamen, verbirgt Schlüssel |
 | `killswitch.py` | – | Baut das nftables-Regelwerk als Text |
@@ -36,6 +37,8 @@ Nur diese festen Unterbefehle, sonst nichts:
 | `delete NAME`, `rename ALT NEU`, `export NAME` | Nur für Tunnel, die Bony's VPN selbst angelegt hat |
 | `autostart NAME on/off` | `systemctl enable/disable wg-quick@NAME`. Immer nur ein Tunnel |
 | `killswitch on [--exception NETZ …] / off / status` | Kill-Switch (siehe unten) |
+| `netz start / up / down` | Bony-Netz: Dienst `tailscaled` starten, `tailscale up` (ohne Argumente) bzw. `tailscale down` |
+| `netz join --login-server URL --hostname NAME [--replace]` | Bony-Netz: mit Geräteschlüssel von der **Standardeingabe** verbinden (siehe unten) |
 
 Eingaben werden so geprüft:
 
@@ -55,6 +58,32 @@ Eingaben werden so geprüft:
   auf dem Host werden angezeigt und lassen sich verbinden, aber nicht verändern.
 - **Sperre**: Jede ändernde Aktion hält eine Dateisperre (`/etc/bonys-vpn/.lock`), damit zwei Aufrufe
   sich nicht in die Quere kommen.
+
+## Bony-Netz (Tailscale)
+
+Der Bereich „Bony-Netz“ der Oberfläche spricht als Benutzer mit der Zentrale (gemeinsamer Baustein `bony_netz`,
+unverändert wie in Bony's Agents). Die Anmeldung (Instanz-Token) liegt in `~/.config/bonys-netz/konto.json`, Ordner
+700, Datei 600, und erscheint in keiner Anzeige, keinem Protokoll und keiner Fehlermeldung. Den Zustand von
+Tailscale liest die Oberfläche selbst (`tailscale status --json`, ohne root). Root braucht nur das Verbinden:
+
+- **Geräteschlüssel nur über die Standardeingabe.** Der Schlüssel ist einmal nutzbar und 60 Minuten gültig, die
+  Oberfläche holt ihn erst direkt vor dem Verbinden. Als Argument wäre er in `ps` und im polkit-Protokoll
+  (`command_line`) sichtbar. Der Helfer schreibt ihn in eine temporäre Datei mit Rechten 600, übergibt
+  `--auth-key file:…` und löscht die Datei danach in jedem Fall. In Fehlermeldungen wird er ersetzt.
+- **Geprüfte Argumente:** Login-Server nur `https://Rechner[:Port][/Pfad]`, Gerätename nur `[a-z0-9-]` (höchstens
+  63 Zeichen, nicht mit `-` am Anfang), Schlüssel nur `[A-Za-z0-9_-]`.
+- **Anderes Konto:** Ohne `--replace` verbindet `tailscale up --reset` im aktuellen Profil – das tut die
+  Oberfläche nur, wenn kein Konto angemeldet ist oder es nachweislich ihr eigenes war (Adresse in der Geräteliste
+  der Instanz bzw. selbst mit dieser Instanz und diesem Namen verbunden). Ist ein anderes Konto angemeldet, fragt
+  sie vorher und ruft `--replace` auf: `tailscale login` legt ein neues Profil an, das andere bleibt erhalten.
+- **Installation** nur aus der offiziellen Paketquelle (`pkgs.tailscale.com`, Schlüssel nach
+  `/usr/share/keyrings/tailscale-archive-keyring.gpg`) wie im Beitrittsskript des Bausteins – über denselben Weg
+  wie das Nachinstallieren von WireGuard (pkexec, Protokoll im Fenster). Linux Mint und andere Ubuntu-Abkömmlinge
+  nehmen wie das offizielle `install.sh` das Ubuntu-Paket (`UBUNTU_CODENAME`).
+- **Kill-Switch:** unverändert. Er lässt nur die WireGuard-Geräte durch, also nicht `tailscale0`. Wer das
+  Bony-Netz mit Kill-Switch nutzen will, trägt `100.64.0.0/10` als Ausnahme ein. Das ist sicher: Die Pakete in
+  `tailscale0` verpackt `tailscaled` verschlüsselt neu, und diese äußeren Pakete gehen wie alles andere nur durch
+  den Tunnel – ohne Tunnel blockiert der Kill-Switch sie.
 
 ## Prüfung der .conf
 

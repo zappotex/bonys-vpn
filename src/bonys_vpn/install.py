@@ -26,7 +26,9 @@ from pathlib import Path
 HERE = Path(__file__).resolve().parent
 PKG = "bonys_vpn"
 MODULES = ("__init__.py", "conf.py", "killswitch.py", "helper.py", "cli.py", "install.py", "model.py", "gui.py",
-           "host.py", "updates.py", "signing.py")
+           "host.py", "updates.py", "signing.py", "netz.py", "netz_gui.py")
+# Gemeinsamer Baustein mit Bony's Agents (Bereich „Bony-Netz“ der Oberfläche) – liegt neben bonys_vpn
+BONY_NETZ = "bony_netz"
 # Von der Oberfläche zur Laufzeit gebraucht (relativ zu data/)
 GUI_DATA = ("bonys-vpn.png", "icons/bonys-vpn-connected.svg", "icons/bonys-vpn-disconnected.svg",
             "icons/bonys-vpn-blocked.svg", "icons/bonys-vpn-warning.svg")
@@ -109,6 +111,8 @@ def build(package: str, root: Path) -> list[Path]:
             put(f"{LIB}/{PKG}/{m}", (HERE / m).read_bytes())
         for rel in GUI_DATA:
             put(f"{LIB}/{PKG}/data/{rel}", (data / rel).read_bytes())
+        for m in sorted((HERE.parent / BONY_NETZ).glob("*.py")):
+            put(f"{LIB}/{BONY_NETZ}/{m.name}", m.read_bytes())
         put(HELPER, WRAPPER.format(what="Root-Helfer (über pkexec)", lib=LIB, pkg=PKG, module="helper"), 0o755)
         put(CLI, WRAPPER.format(what="Kommandozeile", lib=LIB, pkg=PKG, module="cli"), 0o755)
         put(GUI, WRAPPER.format(what="Oberfläche", lib=LIB, pkg=PKG, module="gui"), 0o755)

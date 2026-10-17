@@ -98,6 +98,17 @@ FAKE_TOOLS = {
     "pkexec": """
         os.execv(sys.argv[1], sys.argv[1:])
         """,
+    "tailscale": """
+        args = sys.argv[1:]
+        for a in args:
+            if a.startswith("file:"):
+                write("authkey", open(a[5:]).read())
+                write("authkey_mode", oct(os.stat(a[5:]).st_mode & 0o777))
+                write("authkey_path", a[5:])
+        if args[:1] == ["up"] and state("up_fails"):
+            sys.stderr.write("backend error: login needed for hskey-auth-0001geheim\\n")
+            sys.exit(1)
+        """,
 }
 
 PRELUDE = """#!{python}
@@ -612,6 +623,8 @@ def test_build_package_tree(tmp_path):
     assert "ExecStart=/usr/sbin/nft -f /etc/bonys-vpn/killswitch.nft" in (tmp_path / install.UNIT).read_text()
     for m in install.MODULES:
         assert (tmp_path / install.LIB / install.PKG / m).exists()
+    for m in ("__init__.py", "konto.py", "zentrale.py", "fehler.py", "agentenpc.py"):
+        assert (tmp_path / install.LIB / install.BONY_NETZ / m).exists()
     assert not (tmp_path / "etc").exists()  # keine Conffiles im Hauptpaket
     assert not (tmp_path / install.AGENT_RULES).exists()
 
@@ -669,7 +682,8 @@ def test_installed_copy_runs_standalone(tmp_path):
     lib = tmp_path / install.LIB
     proc = subprocess.run([sys.executable, "-I", "-c",
                            f"import sys; sys.path.insert(0, {str(lib)!r}); "
-                           "from bonys_vpn import conf, cli, helper, host, updates; print(conf.check_name('wg0'))"],
+                           "from bonys_vpn import conf, cli, helper, host, updates, netz; "
+                           "print(conf.check_name('wg0'))"],
                           capture_output=True, text=True)
     assert proc.returncode == 0, proc.stderr
     assert proc.stdout.strip() == "wg0"
@@ -689,11 +703,71 @@ def test_vpn_package_has_no_project_imports():
             else:
                 continue
             for m in mods:
-                # Die Oberfläche braucht zusätzlich python3-gi (Debian-Paket)
-                assert m in stdlib or m == "__future__" or (py.name == "gui.py" and m == "gi"), \
-                    f"{py.name} importiert {m}"
+                # Die Oberfläche braucht zusätzlich python3-gi (Debian-Paket), der Bereich „Bony-Netz“ den
+                # mitgelieferten Baustein bony_netz (der Helfer nie)
+                assert m in stdlib or m == "__future__" or (py.name in ("gui.py", "netz_gui.py") and m == "gi") \
+                    or (py.name in ("netz.py", "netz_gui.py") and m == "bony_netz"), f"{py.name} importiert {m}"
 
 
 def test_helper_never_uses_shell():
     src = "".join(p.read_text() for p in VPN_DIR.glob("*.py"))
     assert "shell=True" not in src and "os.system" not in src and "os.popen" not in src
+
+
+# ---------- Bony-Netz (Tailscale) ----------
+KEY = "hskey-auth-0001geheim"
+
+
+def test_netz_join_key_only_via_stdin_and_file(env):
+    rc, _, err = run(env, "netz", "join", "--login-server", "https://vpn.bony23.de", "--hostname", "rechner-mint",
+                     data=(KEY + "\n").encode())
+    assert rc == 0, err
+    calls = env.calls()
+    assert KEY not in calls                                  # nie als Argument
+    assert "tailscale up --reset --login-server https://vpn.bony23.de --auth-key file:" in calls
+    assert "--hostname rechner-mint --timeout=60s" in calls
+    assert (env.fake_state / "authkey").read_text() == KEY
+    assert (env.fake_state / "authkey_mode").read_text() == "0o600"
+    assert not os.path.exists((env.fake_state / "authkey_path").read_text())   # danach gelöscht
+    assert "systemctl enable --now tailscaled" in calls      # Dienst lief nicht (Fake: is-active leer)
+
+
+def test_netz_join_replace_uses_new_profile(env):
+    rc, _, _ = run(env, "netz", "join", "--login-server", "https://vpn.test", "--hostname", "rechner-mint",
+                   "--replace", data=KEY.encode())
+    assert rc == 0
+    assert "tailscale login --login-server https://vpn.test" in env.calls() and "--reset" not in env.calls()
+
+
+@pytest.mark.parametrize("args, data", [
+    (["--login-server", "http://vpn.test", "--hostname", "a"], KEY),
+    (["--login-server", "https://vpn.test --operator=root", "--hostname", "a"], KEY),
+    (["--login-server", "https://vpn.test", "--hostname", "Rechner Mint"], KEY),
+    (["--login-server", "https://vpn.test", "--hostname=-x"], KEY),
+    (["--login-server", "https://vpn.test", "--hostname", "a"], "kurz"),
+    (["--login-server", "https://vpn.test", "--hostname", "a"], "hskey; rm -rf /"),
+    (["--hostname", "a"], KEY),
+])
+def test_netz_join_rejects_bad_input(env, args, data):
+    rc, _, err = run(env, "netz", "join", *args, data=data.encode())
+    assert rc == 1 and err.startswith("Fehler:")
+    assert "tailscale" not in env.calls()
+
+
+def test_netz_up_down_and_errors_hide_key(env):
+    assert run(env, "netz", "up")[0] == 0
+    assert run(env, "netz", "down")[0] == 0
+    assert run(env, "netz", "start")[0] == 0
+    calls = env.calls()
+    assert "tailscale up\n" in calls and "tailscale down\n" in calls
+    (env.fake_state / "up_fails").write_text("1")
+    rc, _, err = run(env, "netz", "up")
+    assert rc == 1 and "neue Anmeldung" in err
+    rc, _, err = run(env, "netz", "join", "--login-server", "https://vpn.test", "--hostname", "a", data=KEY.encode())
+    assert rc == 1 and KEY not in err
+
+
+def test_netz_without_tailscale(env):
+    (env.fake_bin / "tailscale").unlink()
+    rc, _, err = run(env, "netz", "up")
+    assert rc == 1 and "Tailscale ist nicht installiert" in err

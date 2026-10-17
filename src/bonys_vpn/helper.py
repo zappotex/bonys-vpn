@@ -4,11 +4,16 @@
   list | status [NAME] | show NAME | up NAME | down [NAME] | import NAME [--allow-hooks] [--replace]
   delete NAME | rename ALT NEU | export NAME | autostart NAME on|off
   killswitch on [--exception NETZ ... | --no-exceptions] | killswitch off | killswitch status
+  netz start | netz up | netz down | netz join --login-server URL --hostname NAME [--replace]   (Bony-Netz, Tailscale)
 
 Regeln: Tunnelnamen nur ``[a-zA-Z0-9_=+.-]{1,15}``, keine Pfade (Konfigurationen kommen über die
 Standardeingabe), keine Shell (subprocess nur mit Argumentlisten und festem PATH), Dateien in
 /etc/wireguard mit Rechten 600 und root:root. Private Schlüssel erscheinen nie in Ausgaben –
 außer bei ``export``, das genau dafür da ist.
+
+Bony-Netz: ``netz join`` bekommt den Geräteschlüssel über die Standardeingabe (nie als Argument – die
+Befehlszeile sieht jeder in ``ps`` und polkit protokolliert sie) und gibt ihn Tailscale als Datei mit
+Rechten 600 (``--auth-key file:…``), die danach sofort gelöscht wird.
 """
 
 from __future__ import annotations
@@ -25,6 +30,7 @@ import socket
 import subprocess
 import sys
 import tempfile
+import urllib.parse
 from pathlib import Path
 
 from . import SCHEMA, __version__, killswitch
@@ -35,6 +41,11 @@ STATE_DIR = Path("/etc/bonys-vpn")
 KS_UNIT = "bonys-vpn-killswitch.service"
 SAFE_PATH = "/usr/sbin:/usr/bin:/sbin:/bin"
 _KEYLIKE = re.compile(r"(?<![A-Za-z0-9+/])[A-Za-z0-9+/]{43}=")
+# Bony-Netz (Tailscale): Gerätename wie bony_netz.geraetename, Schlüssel wie von Headscale ausgegeben
+TS_HOSTNAME = re.compile(r"[a-z0-9](?:[a-z0-9-]{0,61}[a-z0-9])?")
+TS_KEY = re.compile(r"[A-Za-z0-9_-]{8,256}")
+TS_LOGIN_SERVER = re.compile(r"https://[A-Za-z0-9.-]+(?::[0-9]{1,5})?(?:/[A-Za-z0-9._~/-]*)?")
+TS_WAIT = 60        # Sekunden, die „tailscale up/login“ auf die Verbindung wartet
 
 
 class HelperError(Exception):
@@ -49,6 +60,19 @@ def scrub(text: str) -> str:
 def clean_env(path: str = SAFE_PATH) -> dict[str, str]:
     """Umgebung für Programme, die der Helfer als root startet: nur ein fester PATH und die Sprache."""
     return {"PATH": path, "LC_ALL": "C.UTF-8"}
+
+
+def check_login_server(url: str) -> str:
+    """Adresse des Login-Servers (Headscale): nur https, Rechnername, Port und Pfad – sonst HelperError."""
+    if not TS_LOGIN_SERVER.fullmatch(url or "") or not urllib.parse.urlsplit(url).hostname:
+        raise HelperError("Ungültige Adresse des Login-Servers (erwartet wird https://…).")
+    return url
+
+
+def check_hostname(name: str) -> str:
+    if not TS_HOSTNAME.fullmatch(name or ""):
+        raise HelperError("Ungültiger Gerätename – erlaubt sind a–z, 0–9 und „-“ (höchstens 63 Zeichen).")
+    return name
 
 
 def wg_unit(name: str) -> str:
@@ -70,13 +94,14 @@ class Helper:
         self.resolve = resolve
 
     # ---------- Grundlagen ----------
-    def _run(self, *args: str, check: bool = True, input: str | None = None) -> subprocess.CompletedProcess:
+    def _run(self, *args: str, check: bool = True, input: str | None = None,
+             timeout: float = 90) -> subprocess.CompletedProcess:
         tool = shutil.which(args[0], path=self.path)
         if not tool:
             pkg = {"wg": "wireguard-tools", "wg-quick": "wireguard-tools", "nft": "nftables"}.get(args[0], args[0])
             raise HelperError(f"Das Programm „{args[0]}“ fehlt (Paket {pkg}).")
         try:
-            proc = subprocess.run([tool, *args[1:]], input=input, capture_output=True, text=True, timeout=90,
+            proc = subprocess.run([tool, *args[1:]], input=input, capture_output=True, text=True, timeout=timeout,
                                   env=clean_env(self.path),
                                   stdin=None if input else subprocess.DEVNULL)
         except subprocess.TimeoutExpired:
@@ -409,6 +434,65 @@ class Helper:
             (self.state_dir / "killswitch.nft").unlink(missing_ok=True)
 
 
+    # ---------- Bony-Netz (Tailscale) ----------
+    def _tailscaled(self) -> None:
+        """Tailscale muss installiert sein (das macht die Oberfläche aus der offiziellen Quelle), der Dienst läuft."""
+        if not shutil.which("tailscale", path=self.path):
+            raise HelperError("Tailscale ist nicht installiert.")
+        if self._run("systemctl", "is-active", "tailscaled", check=False).stdout.strip() != "active":
+            self._run("systemctl", "enable", "--now", "tailscaled")
+
+    def netz_start(self) -> None:
+        """Nur den Dienst tailscaled starten (ohne an einer Anmeldung etwas zu ändern)."""
+        with self._lock():
+            self._tailscaled()
+
+    def netz_up(self) -> None:
+        """Wieder einschalten, ohne Schlüssel: bloßes „tailscale up“ übernimmt die bisherigen Einstellungen.
+        Wurde der Rechner auf dem Server entfernt, wartet Tailscale auf eine neue Anmeldung – dann bricht
+        der Aufruf nach ``TS_WAIT`` Sekunden ab und die Oberfläche holt einen neuen Schlüssel."""
+        with self._lock():
+            self._tailscaled()
+            try:
+                self._run("tailscale", "up", timeout=TS_WAIT)
+            except HelperError:
+                raise HelperError("Tailscale hat sich nicht wieder verbunden – eine neue Anmeldung ist "
+                                  "nötig.") from None
+
+    def netz_down(self) -> None:
+        """Ausschalten – kein Abmelden: Einstellungen und Anmeldung bleiben für das nächste „up“."""
+        with self._lock():
+            self._tailscaled()
+            self._run("tailscale", "down")
+
+    def netz_join(self, login_server: str, hostname: str, key: str, replace: bool = False) -> None:
+        """Mit dem Netz der Instanz verbinden (einmal nutzbarer Geräteschlüssel).
+
+        Ohne ``replace`` im aktuellen Tailscale-Profil (``up --reset``: alte Einstellungen weg). Mit ``replace``
+        (anderes Konto angemeldet, die Oberfläche hat gefragt) über ``tailscale login``: Das legt ein neues Profil
+        an – das andere Konto bleibt als Profil erhalten (``tailscale switch``), ist aber nicht mehr aktiv.
+        """
+        check_login_server(login_server)
+        check_hostname(hostname)
+        if not TS_KEY.fullmatch(key):
+            raise HelperError("Der Geräteschlüssel hat ein unerwartetes Format.")
+        with self._lock():
+            self._tailscaled()
+            fd, path = tempfile.mkstemp(prefix=".bonys-netz-")
+            try:
+                os.fchmod(fd, 0o600)
+                with os.fdopen(fd, "w", encoding="ascii") as f:
+                    f.write(key)
+                cmd = ["login"] if replace else ["up", "--reset"]
+                self._run("tailscale", *cmd, "--login-server", login_server, "--auth-key", f"file:{path}",
+                          "--hostname", hostname, f"--timeout={TS_WAIT}s", timeout=TS_WAIT + 30)
+            except HelperError as e:
+                raise HelperError(str(e).replace(key, "…")) from None
+            finally:
+                with contextlib.suppress(OSError):
+                    os.unlink(path)
+
+
 def _parser() -> argparse.ArgumentParser:
     p = argparse.ArgumentParser(prog="bonys-vpn-helper", description="Root-Helfer von Bony's VPN (über pkexec).")
     sub = p.add_subparsers(dest="cmd", required=True)
@@ -433,6 +517,11 @@ def _parser() -> argparse.ArgumentParser:
     ks.add_argument("state", choices=["on", "off", "status"])
     ks.add_argument("--exception", action="append", metavar="NETZ")
     ks.add_argument("--no-exceptions", action="store_true", help="Ausnahmeliste leeren")
+    netz = sub.add_parser("netz", help="Bony-Netz (Tailscale); bei join kommt der Schlüssel über die Standardeingabe")
+    netz.add_argument("action", choices=["start", "up", "down", "join"])
+    netz.add_argument("--login-server")
+    netz.add_argument("--hostname")
+    netz.add_argument("--replace", action="store_true", help="anderes Tailscale-Konto ersetzen (neues Profil)")
     return p
 
 
@@ -483,6 +572,16 @@ def main(argv: list[str] | None = None, helper: Helper | None = None, stdin=None
             elif args.state == "off":
                 helper.killswitch_off()
             out(helper.status()["killswitch"])
+        elif cmd == "netz":
+            if args.action == "start":
+                helper.netz_start()
+            elif args.action == "up":
+                helper.netz_up()
+            elif args.action == "down":
+                helper.netz_down()
+            else:
+                key = stdin.read(1024).decode("ascii", errors="replace").strip()
+                helper.netz_join(args.login_server or "", args.hostname or "", key, replace=args.replace)
     except (HelperError, wgconf.ConfError) as e:
         print(f"Fehler: {scrub(str(e))}", file=sys.stderr)
         return 1

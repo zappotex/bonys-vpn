@@ -74,6 +74,9 @@ CSS = """
 .bvpn-window button { background-image: none; background-color: #1f2d40; color: #e8eef5;
                       border: 1px solid #2b3c52; box-shadow: none; text-shadow: none; }
 .bvpn-window button:hover { background-color: #2b3c52; }
+/* Bereichswahl (WireGuard-Tunnel / Bony-Netz): gewählter Bereich mit blauer Unterkante */
+.bvpn-window button:checked { background-color: #2b3c52; box-shadow: inset 0 -3px #3fa9f5; }
+.bvpn-window button:checked label { font-weight: bold; }
 .bvpn-window button:disabled, .bvpn-window button:disabled label { color: #5d6e82; }
 .bvpn-window button label { color: #e8eef5; }
 .bvpn-window button.bvpn-accent { background-image: none; background-color: #f5a623; color: #0d141d;
@@ -295,9 +298,20 @@ class Window(Gtk.ApplicationWindow):
         self.update_release: updates.Release | None = None
 
         self.stack = Gtk.Stack()
-        root.pack_start(self.stack, True, True, 0)
         self.stack.add_named(self._empty_page(), "empty")
         self.stack.add_named(self._main_page(), "main")
+        # Zwei Bereiche: WireGuard-Tunnel und Bony-Netz (nicht im Agent-PC – den verbindet Bony's Agents selbst)
+        self.areas = Gtk.Stack(transition_type=Gtk.StackTransitionType.CROSSFADE)
+        self.areas.add_titled(self.stack, "tunnel", tr("Tunnel"))
+        self.netz = None
+        if not app.agentpc:
+            from .netz_gui import NetzBereich
+
+            self.netz = NetzBereich(self)
+            self.areas.add_titled(self.netz, "netz", tr("Bony-Netz"))
+            self.switcher.set_stack(self.areas)
+            self.areas.connect("notify::visible-child-name", self._on_area)
+        root.pack_start(self.areas, True, True, 0)
 
         self.drag_dest_set(Gtk.DestDefaults.ALL, [Gtk.TargetEntry.new("text/uri-list", 0, 0)], Gdk.DragAction.COPY)
         self.connect("drag-data-received", self._on_drop)
@@ -316,12 +330,15 @@ class Window(Gtk.ApplicationWindow):
         self.summary.set_ellipsize(Pango.EllipsizeMode.END)
         titles.pack_start(self.summary, False, False, 0)
         box.pack_start(titles, True, True, 0)
-        imp = styled(Gtk.Button(label=tr("Importieren …")), "bvpn-accent")
-        imp.connect("clicked", lambda *_: self.choose_import())
-        box.pack_end(imp, False, False, 0)
+        self.switcher = Gtk.StackSwitcher(valign=Gtk.Align.CENTER)   # Bereiche (Stack folgt in __init__)
+        self.switcher.set_homogeneous(False)
+        box.pack_start(self.switcher, False, False, 0)
+        self.import_btn = styled(Gtk.Button(label=tr("Importieren …")), "bvpn-accent")
+        self.import_btn.connect("clicked", lambda *_: self.choose_import())
+        box.pack_end(self.import_btn, False, False, 0)
         reload_ = Gtk.Button.new_from_icon_name("view-refresh-symbolic", Gtk.IconSize.BUTTON)
         reload_.set_tooltip_text(tr("Neu laden"))
-        reload_.connect("clicked", lambda *_: self.app.refresh())
+        reload_.connect("clicked", lambda *_: self.netz.refresh() if self.area() == "netz" else self.app.refresh())
         box.pack_end(reload_, False, False, 0)
         box.pack_end(self._menu_button(), False, False, 0)
         return box
@@ -455,6 +472,15 @@ class Window(Gtk.ApplicationWindow):
         nets = label("", "bvpn-muted", "bvpn-small", wrap=True)
         box.pack_start(nets, False, False, 0)
         return {"box": box, "switch": sw, "nets": nets, "handler": handler}
+
+    def area(self) -> str:
+        return self.areas.get_visible_child_name() or "tunnel"
+
+    def _on_area(self, *_) -> None:
+        netz_area = self.area() == "netz"
+        self.import_btn.set_visible(not netz_area)   # Importieren gehört zu den Tunneln
+        if netz_area:
+            self.netz.shown()
 
     # ----- Anzeige
     def show_status(self, status: model.Status) -> None:
