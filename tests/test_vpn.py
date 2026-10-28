@@ -725,7 +725,8 @@ def test_netz_join_key_only_via_stdin_and_file(env):
     calls = env.calls()
     assert KEY not in calls                                  # nie als Argument
     assert "tailscale up --reset --login-server https://vpn.bony23.de --auth-key file:" in calls
-    assert "--hostname rechner-mint --timeout=60s" in calls
+    assert "--shields-up" in calls   # keine Verbindungen herein, auch nicht von den eigenen Agent-PCs
+    assert "--hostname rechner-mint --shields-up --timeout=60s" in calls
     assert (env.fake_state / "authkey").read_text() == KEY
     assert (env.fake_state / "authkey_mode").read_text() == "0o600"
     assert not os.path.exists((env.fake_state / "authkey_path").read_text())   # danach gelöscht

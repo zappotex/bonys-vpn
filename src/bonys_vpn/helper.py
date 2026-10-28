@@ -484,8 +484,10 @@ class Helper:
                 with os.fdopen(fd, "w", encoding="ascii") as f:
                     f.write(key)
                 cmd = ["login"] if replace else ["up", "--reset"]
+                # --shields-up: Dieser Rechner nimmt im Bony-Netz keine Verbindungen an – auch nicht von den
+                # eigenen Agent-PCs (in denen KI-Agenten laufen). Hinaus (Hilfe des Kursleiters) geht weiter.
                 self._run("tailscale", *cmd, "--login-server", login_server, "--auth-key", f"file:{path}",
-                          "--hostname", hostname, f"--timeout={TS_WAIT}s", timeout=TS_WAIT + 30)
+                          "--hostname", hostname, "--shields-up", f"--timeout={TS_WAIT}s", timeout=TS_WAIT + 30)
             except HelperError as e:
                 raise HelperError(str(e).replace(key, "…")) from None
             finally:

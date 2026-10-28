@@ -5,6 +5,9 @@ war Bony's VPN ein Teil davon. Die Entstehung steht im Verlauf dieses Repository
 
 ## Unveröffentlicht
 
+- **Bony-Netz: dieser Rechner nimmt keine Verbindungen an** (`tailscale up/login --shields-up`). Vorher erreichten ihn
+  alle eigenen Agent-PCs auf allen Ports; ausgehende Verbindungen (z. B. die Hilfe des Kursleiters) gehen weiter.
+- Gemeinsamer Baustein `bony_netz` 0.2.1: Das Instanz-Token folgt keiner Weiterleitung und geht nie über `http://`.
 - Gemeinsamer Baustein `bony_netz` 0.1.1 (gleich wie in Bony's Agents; Korrektur im Beitrittsskript für Agent-PCs,
   betrifft Bony's VPN selbst nicht).
 - **Bereich „Bony-Netz“** neben den WireGuard-Tunneln (oben im Fenster umschalten, nicht im Agent-PC): Server
