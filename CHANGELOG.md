@@ -3,13 +3,13 @@
 Alle Versionen von Bony's VPN. Bis zur Version 0.14 von [Bony's Agents](https://github.com/zappotex/BonysAgents)
 war Bony's VPN ein Teil davon. Die Entstehung steht im Verlauf dieses Repositorys.
 
-## Unveröffentlicht
+## 1.1.0 – Bony-Netz
 
-- **Bony-Netz: dieser Rechner nimmt keine Verbindungen an** (`tailscale up/login --shields-up`). Vorher erreichten ihn
-  alle eigenen Agent-PCs auf allen Ports; ausgehende Verbindungen (z. B. die Hilfe des Kursleiters) gehen weiter.
-- Gemeinsamer Baustein `bony_netz` 0.2.1: Das Instanz-Token folgt keiner Weiterleitung und geht nie über `http://`.
-- Gemeinsamer Baustein `bony_netz` 0.1.1 (gleich wie in Bony's Agents; Korrektur im Beitrittsskript für Agent-PCs,
-  betrifft Bony's VPN selbst nicht).
+- **Bony-Netz: dieser Rechner nimmt keine Verbindungen an** (`tailscale up/login --shields-up`). Ausgehende
+  Verbindungen (z. B. die Hilfe des Kursleiters in Bony's Agents) gehen weiter.
+- Gemeinsamer Baustein `bony_netz` 0.2.1 (gleich wie in Bony's Agents und im Repo bonys-netz): Das Instanz-Token folgt
+  keiner Weiterleitung und geht nie über `http://`; Korrektur im Beitrittsskript für Agent-PCs (betrifft Bony's VPN
+  selbst nicht).
 - **Bereich „Bony-Netz“** neben den WireGuard-Tunneln (oben im Fenster umschalten, nicht im Agent-PC): Server
   wählen und prüfen, Instanz anlegen oder löschen, Kursleiter-Code einlösen, Liste der Geräte der Instanz mit
   Netzadresse, online/offline und „zuletzt gesehen“ (alle 30 Sekunden, solange der Bereich sichtbar ist),
