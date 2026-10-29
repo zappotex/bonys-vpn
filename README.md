@@ -98,6 +98,8 @@ Internet – und auf Wunsch auch dieser Rechner.
   Instanz – danach erreichst du deine Agent-PCs unter ihrer Netzadresse (z. B. `ping 100.64.0.7`). Fehlt
   Tailscale, bietet Bony's VPN die Installation aus der offiziellen Paketquelle `pkgs.tailscale.com` an.
   Ausschalten trennt nur (`tailscale down`), beim Wiedereinschalten braucht es keinen neuen Schlüssel.
+  Dein Rechner nimmt dabei **keine Verbindungen an** (`--shields-up`) – auch nicht von deinen eigenen Agent-PCs, in
+  denen KI-Agenten laufen. Du erreichst sie, sie dich nicht.
   Ist auf dem Rechner schon ein **anderes Tailscale-Konto** angemeldet, fragt Bony's VPN vorher: Es wird beim
   Verbinden ersetzt, bleibt aber als Profil erhalten (`tailscale switch`).
 
